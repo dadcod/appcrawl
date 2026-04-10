@@ -1,0 +1,56 @@
+{
+  "name": "StorySpell",
+  "description": "A children's storytelling app where parents create personalized bedtime stories using AI, then record their voice narrating the story for their child to listen to anytime.",
+  "screens": [
+    { "name": "Splash", "description": "App loading screen with StorySpell logo" },
+    { "name": "Onboarding", "description": "Choose hero (Brave Lion / Magic Unicorn), name your hero, get started" },
+    { "name": "Auth", "description": "Login / signup screen with Apple and Google sign-in" },
+    { "name": "Dashboard", "description": "Main screen with 'Write a Story' and 'Record' action buttons, plus story cards" },
+    { "name": "Library", "description": "List of all created stories" },
+    { "name": "Settings", "description": "Account settings, logout, delete account" },
+    { "name": "StoryWizard", "description": "Multi-step wizard to create a new story: pick hero, pick setting, pick theme, generate story" },
+    { "name": "Verification", "description": "Email verification screen" },
+    { "name": "Recorder", "description": "Voice recording screen — record narration for a story" },
+    { "name": "SaveRecording", "description": "Save/review a recorded narration" },
+    { "name": "Player", "description": "Story player — displays story text with audio playback controls" },
+    { "name": "EditStory", "description": "Edit an existing story's title or content" },
+    { "name": "Paywall", "description": "Subscription paywall — yearly ($59.99/yr) or monthly ($5.99)" },
+    { "name": "SettingsDetail", "description": "Privacy policy or help detail screen" },
+    { "name": "DeveloperSettings", "description": "Hidden developer/debug settings" }
+  ],
+  "testIds": [
+    "settings-btn",
+    "paywall-close-btn",
+    "settings-logout-btn",
+    "settings-delete-btn",
+    "player-back-btn",
+    "story-options-btn",
+    "player-story-title",
+    "player-story-content",
+    "player-fab",
+    "player-play-btn",
+    "player-time-label",
+    "story-delete-btn",
+    "header-done-btn",
+    "stop-button",
+    "review-save-btn",
+    "record-button",
+    "wizard-hero-name-input",
+    "wizard-next-btn"
+  ],
+  "credentials": {
+    "email": "test@example.com",
+    "password": "password123"
+  },
+  "notes": [
+    "The onboarding flow runs on first launch: choose hero -> name hero -> start journey",
+    "After onboarding, the paywall appears offering a free trial — dismiss it by tapping the X close button in the top-right corner using tap_coordinates(92, 14)",
+    "After dismissing the paywall, you'll see the auth screen — use 'Already have an account? Log in' to switch to login mode",
+    "Story creation: Dashboard -> Write a Story -> StoryWizard (pick hero, setting, theme) -> AI generates story",
+    "Recording: open a story -> tap record -> Recorder screen -> speak -> save",
+    "The app requires authentication to create stories — use tap_and_type with the PLACEHOLDER text inside input fields (e.g. 'hello@example.com' for email, '••••••••' for password), NOT the labels above them"
+  ],
+  "setup": [
+    "cd ../StorySpell/mobile/functions && npx ts-node scripts/create_test_user.ts test@example.com password123 'Skirmish Test' 2>/dev/null || true"
+  ]
+}

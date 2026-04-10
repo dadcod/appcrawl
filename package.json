@@ -1,0 +1,30 @@
+{
+  "name": "skirmish",
+  "version": "0.1.0",
+  "description": "AI-powered mobile app testing. Let an LLM explore and test your iOS app autonomously.",
+  "type": "module",
+  "bin": {
+    "skirmish": "./dist/index.js"
+  },
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^1.0.0",
+    "@ai-sdk/google": "^1.0.0",
+    "@ai-sdk/openai": "^1.0.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@openrouter/ai-sdk-provider": "^2.5.1",
+    "ai": "^4.0.0",
+    "commander": "^13.0.0",
+    "ollama-ai-provider": "^1.2.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.9.0"
+  }
+}

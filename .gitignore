@@ -1,0 +1,6 @@
+node_modules/
+dist/
+skirmish-reports/
+*.tsbuildinfo
+.env
+.env.local
