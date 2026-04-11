@@ -174,20 +174,37 @@ async function renderHtml(report: Report, runDir: string): Promise<string> {
   }
 
   const severityColor = (s: string) =>
-    s === "critical" ? "#ef4444" : s === "major" ? "#f59e0b" : "#3b82f6";
+    s === "critical" ? "#ef4444" : s === "major" ? "#f59e0b" : "#60a5fa";
+
+  const formatTimestamp = (iso: string): string => {
+    try {
+      const d = new Date(iso);
+      return d.toLocaleString(undefined, {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    } catch {
+      return iso;
+    }
+  };
 
   const issueCards = report.issues
     .map(
-      (issue) => `
-      <div class="issue-card" style="border-left: 4px solid ${severityColor(issue.severity)}">
+      (issue, idx) => `
+      <div class="issue-card" style="border-left-color:${severityColor(issue.severity)}">
         <div class="issue-header">
-          <span class="severity" style="background:${severityColor(issue.severity)}">${issue.severity.toUpperCase()}</span>
-          <span>${issue.description}</span>
+          <span class="severity-pill" style="background:${severityColor(issue.severity)}">${issue.severity.toUpperCase()}</span>
+          <span class="issue-title">${esc(issue.description)}</span>
+          <span class="issue-step">Step ${issue.step}</span>
         </div>
-        <div class="issue-detail"><strong>Expected:</strong> ${esc(issue.expected)}</div>
-        <div class="issue-detail"><strong>Actual:</strong> ${esc(issue.actual)}</div>
-        <div class="issue-detail"><strong>Step:</strong> ${issue.step}</div>
-        ${screenshots.has(issue.step) ? `<img src="data:image/png;base64,${screenshots.get(issue.step)}" class="issue-screenshot" />` : ""}
+        <div class="issue-body">
+          <div class="issue-detail"><span class="issue-label">Expected</span><span>${esc(issue.expected)}</span></div>
+          <div class="issue-detail"><span class="issue-label">Actual</span><span>${esc(issue.actual)}</span></div>
+        </div>
+        ${screenshots.has(issue.step) ? `<img src="data:image/png;base64,${screenshots.get(issue.step)}" class="issue-screenshot" data-lightbox="issue-${idx}" alt="Screenshot at step ${issue.step}" />` : ""}
       </div>`,
     )
     .join("\n");
@@ -195,17 +212,19 @@ async function renderHtml(report: Report, runDir: string): Promise<string> {
   const timelineSteps = report.actions
     .map((action) => {
       const params = Object.entries(action.params)
-        .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
+        .map(([k, v]) => `<span class="arg-key">${esc(k)}</span>=<span class="arg-val">${esc(JSON.stringify(v))}</span>`)
         .join(", ");
-      const hasIssue = report.issues.some((i) => i.step === action.step);
+      const issue = report.issues.find((i) => i.step === action.step);
+      const isFailure = /^failed?[: ]/i.test(action.result);
+      const stateClass = issue ? "step--issue" : isFailure ? "step--failure" : "";
       const img = screenshots.has(action.step)
-        ? `<img src="data:image/png;base64,${screenshots.get(action.step)}" class="step-screenshot" loading="lazy" />`
-        : "";
+        ? `<img src="data:image/png;base64,${screenshots.get(action.step)}" class="step-screenshot" loading="lazy" alt="Step ${action.step}" data-lightbox="step-${action.step}" />`
+        : `<div class="step-screenshot step-screenshot--missing">no screenshot</div>`;
       return `
-        <div class="step ${hasIssue ? "step-issue" : ""}">
+        <div class="step ${stateClass}">
           <div class="step-number">${action.step}</div>
           <div class="step-content">
-            <div class="step-action"><strong>${esc(action.tool)}</strong>(${esc(params)})</div>
+            <div class="step-action"><span class="step-tool">${esc(action.tool)}</span>(${params || '<span class="arg-val">—</span>'})</div>
             <div class="step-result">${esc(action.result)}</div>
           </div>
           <div class="step-img">${img}</div>
@@ -213,9 +232,17 @@ async function renderHtml(report: Report, runDir: string): Promise<string> {
     })
     .join("\n");
 
-  const resultBadge = report.summary.testResult
-    ? `<span class="badge ${report.summary.testResult.status === "pass" ? "badge-pass" : "badge-fail"}">${report.summary.testResult.status.toUpperCase()}</span>`
-    : "";
+  const testResult = report.summary.testResult;
+  const statusBadge = testResult
+    ? `<span class="status-badge status-badge--${testResult.status}">${testResult.status === "pass" ? "Passed" : "Failed"}</span>`
+    : report.summary.issuesFound > 0
+      ? `<span class="status-badge status-badge--warning">${report.summary.issuesFound} Issue${report.summary.issuesFound === 1 ? "" : "s"}</span>`
+      : `<span class="status-badge status-badge--clean">Clean Run</span>`;
+
+  const durationLabel =
+    report.duration >= 60
+      ? `${Math.floor(report.duration / 60)}m ${report.duration % 60}s`
+      : `${report.duration}s`;
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -224,59 +251,200 @@ async function renderHtml(report: Report, runDir: string): Promise<string> {
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>Skirmish Report — ${esc(report.bundleId)}</title>
 <style>
+  :root {
+    --bg: #0b0d10;
+    --bg-elev: #14171c;
+    --bg-elev-2: #1b1f26;
+    --border: #262b33;
+    --border-strong: #323843;
+    --text: #e6e8eb;
+    --text-dim: #9ba1a9;
+    --text-subtle: #6b7280;
+    --accent: #a78bfa;
+    --pass: #34d399;
+    --fail: #f87171;
+    --warn: #fbbf24;
+    --info: #60a5fa;
+    --radius: 10px;
+    --radius-lg: 14px;
+    --shadow: 0 1px 2px rgba(0,0,0,0.35), 0 4px 12px rgba(0,0,0,0.25);
+  }
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f0f0f; color: #e0e0e0; padding: 2rem; }
-  h1 { font-size: 1.8rem; margin-bottom: 0.5rem; color: #fff; }
-  h2 { font-size: 1.3rem; margin: 2rem 0 1rem; color: #fff; border-bottom: 1px solid #333; padding-bottom: 0.5rem; }
-  .meta { color: #888; font-size: 0.9rem; margin-bottom: 2rem; }
-  .meta span { margin-right: 1.5rem; }
-  .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
-  .stat { background: #1a1a1a; border-radius: 12px; padding: 1.2rem; text-align: center; }
-  .stat-value { font-size: 2rem; font-weight: 700; color: #fff; }
-  .stat-label { font-size: 0.8rem; color: #888; margin-top: 0.3rem; }
-  .issue-card { background: #1a1a1a; border-radius: 8px; padding: 1rem 1.2rem; margin-bottom: 1rem; }
-  .issue-header { font-weight: 600; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; }
-  .severity { color: #fff; font-size: 0.7rem; font-weight: 700; padding: 2px 8px; border-radius: 4px; }
-  .issue-detail { font-size: 0.9rem; color: #aaa; margin-top: 0.3rem; }
-  .issue-screenshot { max-width: 200px; border-radius: 8px; margin-top: 0.8rem; border: 1px solid #333; }
-  .step { display: flex; align-items: flex-start; gap: 1rem; padding: 0.8rem 0; border-bottom: 1px solid #1a1a1a; }
-  .step-issue { background: #1a1208; border-radius: 6px; padding: 0.8rem; }
-  .step-number { background: #222; color: #888; font-size: 0.8rem; font-weight: 700; width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
-  .step-content { flex: 1; min-width: 0; }
-  .step-action { font-size: 0.9rem; }
-  .step-result { font-size: 0.85rem; color: #888; margin-top: 0.2rem; }
-  .step-img { flex-shrink: 0; }
-  .step-screenshot { width: 120px; border-radius: 8px; border: 1px solid #333; cursor: pointer; transition: transform 0.2s; }
-  .step-screenshot:hover { transform: scale(2.5); position: relative; z-index: 10; }
-  .badge { font-size: 0.8rem; font-weight: 700; padding: 4px 12px; border-radius: 6px; }
-  .badge-pass { background: #166534; color: #4ade80; }
-  .badge-fail { background: #7f1d1d; color: #f87171; }
-  .no-issues { color: #4ade80; font-size: 0.95rem; padding: 1rem; background: #0a1a0a; border-radius: 8px; }
+  html, body { background: var(--bg); color: var(--text); }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, system-ui, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    padding: 0;
+    -webkit-font-smoothing: antialiased;
+  }
+  .container { max-width: 1120px; margin: 0 auto; padding: 2.5rem 2rem 4rem; }
+
+  /* ---- Header ---- */
+  .header { display: flex; align-items: flex-start; justify-content: space-between; gap: 2rem; margin-bottom: 2rem; }
+  .brand { display: flex; align-items: center; gap: 0.75rem; color: var(--text-dim); font-size: 0.75rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+  .brand-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+  h1 { font-size: 1.65rem; font-weight: 700; letter-spacing: -0.01em; color: var(--text); margin-top: 0.25rem; }
+  .title-sub { color: var(--text-dim); font-size: 0.9rem; margin-top: 0.25rem; font-weight: 400; }
+  .status-badge { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.45rem 0.9rem; border-radius: 999px; font-size: 0.78rem; font-weight: 600; letter-spacing: 0.02em; }
+  .status-badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .status-badge--pass { background: rgba(52, 211, 153, 0.12); color: var(--pass); }
+  .status-badge--fail { background: rgba(248, 113, 113, 0.12); color: var(--fail); }
+  .status-badge--warning { background: rgba(251, 191, 36, 0.12); color: var(--warn); }
+  .status-badge--clean { background: rgba(52, 211, 153, 0.12); color: var(--pass); }
+
+  /* ---- Meta strip ---- */
+  .meta-strip { display: flex; flex-wrap: wrap; gap: 1.5rem; padding: 1rem 1.25rem; background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 1.5rem; }
+  .meta-item { display: flex; flex-direction: column; gap: 2px; }
+  .meta-label { font-size: 0.7rem; color: var(--text-subtle); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
+  .meta-value { font-size: 0.88rem; color: var(--text); font-weight: 500; font-variant-numeric: tabular-nums; }
+  .meta-value code { font-family: 'SF Mono', Menlo, Monaco, Consolas, monospace; font-size: 0.82rem; background: var(--bg-elev-2); padding: 1px 6px; border-radius: 4px; }
+
+  /* ---- Goal banner ---- */
+  .goal { padding: 0.9rem 1.2rem; background: linear-gradient(135deg, rgba(167, 139, 250, 0.1), rgba(167, 139, 250, 0.03)); border: 1px solid rgba(167, 139, 250, 0.25); border-radius: var(--radius); margin-bottom: 1.5rem; color: var(--text); }
+  .goal-label { color: var(--accent); font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; margin-right: 0.5rem; }
+
+  /* ---- Stats grid ---- */
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 0.75rem; margin-bottom: 2.5rem; }
+  .stat { background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.1rem 1.25rem; }
+  .stat-label { font-size: 0.72rem; color: var(--text-subtle); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; margin-bottom: 0.35rem; }
+  .stat-value { font-size: 1.85rem; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; line-height: 1; }
+  .stat--issues .stat-value { color: var(--warn); }
+  .stat--issues.stat--clean .stat-value { color: var(--pass); }
+
+  /* ---- Section ---- */
+  h2 { font-size: 0.85rem; font-weight: 700; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.08em; margin: 2.5rem 0 1rem; display: flex; align-items: center; gap: 0.6rem; }
+  h2::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+
+  /* ---- Issues ---- */
+  .issue-card { background: var(--bg-elev); border: 1px solid var(--border); border-left: 3px solid var(--info); border-radius: var(--radius); padding: 1.1rem 1.25rem; margin-bottom: 0.75rem; }
+  .issue-header { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.9rem; flex-wrap: wrap; }
+  .severity-pill { color: #0b0d10; font-size: 0.68rem; font-weight: 800; letter-spacing: 0.06em; padding: 3px 8px; border-radius: 4px; }
+  .issue-title { font-size: 0.95rem; font-weight: 600; color: var(--text); flex: 1; }
+  .issue-step { font-size: 0.75rem; color: var(--text-subtle); font-variant-numeric: tabular-nums; }
+  .issue-body { display: grid; gap: 0.5rem; }
+  .issue-detail { display: grid; grid-template-columns: 80px 1fr; gap: 0.75rem; font-size: 0.85rem; color: var(--text-dim); }
+  .issue-label { color: var(--text-subtle); font-weight: 600; text-transform: uppercase; font-size: 0.68rem; letter-spacing: 0.06em; padding-top: 2px; }
+  .issue-screenshot { max-width: 220px; border-radius: 8px; margin-top: 1rem; border: 1px solid var(--border); cursor: zoom-in; display: block; transition: opacity 0.15s; }
+  .issue-screenshot:hover { opacity: 0.85; }
+  .no-issues { padding: 1.25rem 1.5rem; background: rgba(52, 211, 153, 0.05); border: 1px solid rgba(52, 211, 153, 0.2); border-radius: var(--radius); color: var(--pass); font-size: 0.9rem; font-weight: 500; }
+
+  /* ---- Timeline ---- */
+  .timeline { background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; }
+  .step { display: grid; grid-template-columns: 42px 1fr 108px; gap: 1rem; padding: 1rem 1.25rem; border-bottom: 1px solid var(--border); align-items: center; transition: background 0.1s; }
+  .step:last-child { border-bottom: none; }
+  .step:hover { background: var(--bg-elev-2); }
+  .step--issue { background: rgba(251, 191, 36, 0.04); border-left: 3px solid var(--warn); padding-left: calc(1.25rem - 3px); }
+  .step--failure { background: rgba(248, 113, 113, 0.03); }
+  .step-number { font-size: 0.72rem; font-weight: 700; color: var(--text-subtle); background: var(--bg-elev-2); border: 1px solid var(--border); width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-variant-numeric: tabular-nums; }
+  .step-content { min-width: 0; }
+  .step-action { font-family: 'SF Mono', Menlo, Monaco, Consolas, monospace; font-size: 0.82rem; color: var(--text); word-break: break-word; }
+  .step-tool { color: var(--accent); font-weight: 600; }
+  .arg-key { color: var(--text-dim); }
+  .arg-val { color: var(--info); }
+  .step-result { font-size: 0.8rem; color: var(--text-dim); margin-top: 0.3rem; word-break: break-word; }
+  .step--issue .step-result { color: var(--warn); }
+  .step--failure .step-result { color: var(--fail); }
+  .step-img { justify-self: end; }
+  .step-screenshot { width: 96px; max-height: 200px; object-fit: cover; object-position: top; border-radius: 6px; border: 1px solid var(--border); cursor: zoom-in; display: block; transition: transform 0.15s, border-color 0.15s; }
+  .step-screenshot:hover { border-color: var(--border-strong); transform: translateY(-1px); }
+  .step-screenshot--missing { width: 96px; height: 60px; display: flex; align-items: center; justify-content: center; font-size: 0.7rem; color: var(--text-subtle); background: var(--bg-elev-2); border: 1px dashed var(--border); }
+
+  /* ---- Lightbox ---- */
+  .lightbox { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.88); display: none; align-items: center; justify-content: center; z-index: 100; padding: 2rem; cursor: zoom-out; backdrop-filter: blur(4px); }
+  .lightbox.open { display: flex; }
+  .lightbox img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 8px; box-shadow: 0 20px 60px rgba(0,0,0,0.6); }
+  .lightbox-close { position: absolute; top: 1.5rem; right: 1.5rem; color: #fff; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); width: 36px; height: 36px; border-radius: 50%; font-size: 1.1rem; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+  .lightbox-close:hover { background: rgba(255,255,255,0.2); }
+
+  /* ---- Footer ---- */
+  .footer { margin-top: 3rem; padding-top: 1.5rem; border-top: 1px solid var(--border); color: var(--text-subtle); font-size: 0.78rem; display: flex; justify-content: space-between; align-items: center; }
+  .footer a { color: var(--text-dim); text-decoration: none; }
+  .footer a:hover { color: var(--text); }
+
+  @media (max-width: 720px) {
+    .container { padding: 1.5rem 1rem 3rem; }
+    .header { flex-direction: column; align-items: flex-start; gap: 1rem; }
+    .step { grid-template-columns: 36px 1fr; }
+    .step-img { grid-column: 1 / -1; justify-self: start; margin-top: 0.25rem; }
+    .issue-detail { grid-template-columns: 1fr; gap: 0.2rem; }
+  }
 </style>
 </head>
 <body>
-  <h1>Skirmish Test Report ${resultBadge}</h1>
-  <div class="meta">
-    <span>${esc(report.bundleId)}</span>
-    <span>${report.mode} mode</span>
-    <span>${report.model}</span>
-    <span>${report.duration}s</span>
-    <span>${report.timestamp}</span>
+  <div class="container">
+    <header class="header">
+      <div>
+        <div class="brand"><span class="brand-dot"></span>Skirmish</div>
+        <h1>Test Report</h1>
+        <div class="title-sub">${esc(report.bundleId)} · ${esc(report.mode)} mode</div>
+      </div>
+      ${statusBadge}
+    </header>
+
+    <div class="meta-strip">
+      <div class="meta-item"><span class="meta-label">Bundle</span><span class="meta-value"><code>${esc(report.bundleId)}</code></span></div>
+      <div class="meta-item"><span class="meta-label">Model</span><span class="meta-value"><code>${esc(report.model)}</code></span></div>
+      <div class="meta-item"><span class="meta-label">Mode</span><span class="meta-value">${esc(report.mode)}</span></div>
+      <div class="meta-item"><span class="meta-label">Duration</span><span class="meta-value">${durationLabel}</span></div>
+      <div class="meta-item"><span class="meta-label">Started</span><span class="meta-value">${esc(formatTimestamp(report.timestamp))}</span></div>
+    </div>
+
+    ${report.instruction ? `<div class="goal"><span class="goal-label">Goal</span>${esc(report.instruction)}</div>` : ""}
+
+    <div class="stats">
+      <div class="stat"><div class="stat-label">Actions</div><div class="stat-value">${report.summary.totalActions}</div></div>
+      <div class="stat"><div class="stat-label">Screens</div><div class="stat-value">${report.summary.screensVisited}</div></div>
+      <div class="stat stat--issues ${report.summary.issuesFound === 0 ? "stat--clean" : ""}"><div class="stat-label">Issues</div><div class="stat-value">${report.summary.issuesFound}</div></div>
+      <div class="stat"><div class="stat-label">Duration</div><div class="stat-value">${durationLabel}</div></div>
+    </div>
+
+    <h2>Issues</h2>
+    ${report.issues.length > 0 ? issueCards : '<div class="no-issues">No issues found — clean run.</div>'}
+
+    <h2>Timeline</h2>
+    <div class="timeline">${timelineSteps}</div>
+
+    <footer class="footer">
+      <div>Generated by Skirmish · ${esc(formatTimestamp(report.timestamp))}</div>
+      <div>${report.summary.totalActions} actions · ${durationLabel}</div>
+    </footer>
   </div>
-  ${report.instruction ? `<p style="color:#a78bfa; margin-bottom:1.5rem"><strong>Goal:</strong> ${esc(report.instruction)}</p>` : ""}
 
-  <div class="summary">
-    <div class="stat"><div class="stat-value">${report.summary.totalActions}</div><div class="stat-label">Actions</div></div>
-    <div class="stat"><div class="stat-value">${report.summary.screensVisited}</div><div class="stat-label">Screens</div></div>
-    <div class="stat"><div class="stat-value" style="color:${report.summary.issuesFound > 0 ? "#f59e0b" : "#4ade80"}">${report.summary.issuesFound}</div><div class="stat-label">Issues</div></div>
-    <div class="stat"><div class="stat-value">${report.duration}s</div><div class="stat-label">Duration</div></div>
+  <div class="lightbox" id="lightbox">
+    <button class="lightbox-close" aria-label="Close">×</button>
+    <img src="" alt="" />
   </div>
 
-  <h2>Issues</h2>
-  ${report.issues.length > 0 ? issueCards : '<div class="no-issues">No issues found</div>'}
+  <script>
+    (function() {
+      const lightbox = document.getElementById('lightbox');
+      const lightboxImg = lightbox.querySelector('img');
+      const closeBtn = lightbox.querySelector('.lightbox-close');
 
-  <h2>Timeline</h2>
-  ${timelineSteps}
+      function open(src, alt) {
+        lightboxImg.src = src;
+        lightboxImg.alt = alt || '';
+        lightbox.classList.add('open');
+        document.body.style.overflow = 'hidden';
+      }
+      function close() {
+        lightbox.classList.remove('open');
+        lightboxImg.src = '';
+        document.body.style.overflow = '';
+      }
+
+      document.querySelectorAll('[data-lightbox]').forEach(function(img) {
+        img.addEventListener('click', function() { open(img.src, img.alt); });
+      });
+      lightbox.addEventListener('click', function(e) {
+        if (e.target === lightbox || e.target === closeBtn) close();
+      });
+      document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape' && lightbox.classList.contains('open')) close();
+      });
+    })();
+  </script>
 </body>
 </html>`;
 }
