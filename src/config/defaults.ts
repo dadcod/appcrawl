@@ -1,7 +1,8 @@
 export const DEFAULTS = {
   maxSteps: 50,
   steeredMaxSteps: 30,
-  model: "claude-sonnet-4-20250514",
+  // Claude Sonnet 4.5 — best vision + tool use for agentic UI testing
+  model: "claude-sonnet-4-5",
   bundleId: "",
   verbose: false,
   reportDir: "skirmish-reports",

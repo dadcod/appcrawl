@@ -12,7 +12,7 @@ export async function generateReport(
     model: string;
     runDir: string;
   },
-): Promise<{ jsonPath: string; mdPath: string; htmlPath: string }> {
+): Promise<{ jsonPath: string; mdPath: string; htmlPath: string; junitPath: string }> {
   const dir = options.runDir;
   await mkdir(dir, { recursive: true });
 
@@ -27,7 +27,27 @@ export async function generateReport(
   const htmlPath = join(dir, "report.html");
   await writeFile(htmlPath, await renderHtml(report, dir));
 
-  return { jsonPath, mdPath, htmlPath };
+  const junitPath = join(dir, "junit.xml");
+  await writeFile(junitPath, renderJunit(report));
+
+  return { jsonPath, mdPath, htmlPath, junitPath };
+}
+
+/**
+ * Exit code convention for CI mode:
+ *   0 = all tests passed, no issues
+ *   1 = test failed or critical/major issues found
+ *   2 = infrastructure error (Maestro, simulator, API key)
+ *
+ * Minor issues alone don't fail the run — they're informational.
+ */
+export function computeExitCode(state: AgentState): number {
+  if (state.testResult?.status === "fail") return 1;
+  const blocking = state.issues.filter(
+    (i) => i.severity === "critical" || i.severity === "major",
+  );
+  if (blocking.length > 0) return 1;
+  return 0;
 }
 
 function buildReport(
@@ -267,6 +287,54 @@ function esc(s: string): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+/**
+ * JUnit XML for CI pipeline integration. Each issue becomes a
+ * <failure>; a failed mark_complete becomes a failed testcase;
+ * a clean run emits a single passing testcase.
+ */
+function renderJunit(report: Report): string {
+  const suiteName = `skirmish.${report.mode}`;
+  const testName = report.instruction
+    ? report.instruction.slice(0, 80)
+    : `explore ${report.bundleId}`;
+  const blocking = report.issues.filter(
+    (i) => i.severity === "critical" || i.severity === "major",
+  );
+  const failed =
+    report.summary.testResult?.status === "fail" || blocking.length > 0;
+  const failures = failed ? 1 : 0;
+  const tests = 1;
+
+  const failureBody = failed
+    ? [
+        report.summary.testResult?.status === "fail"
+          ? `Test marked fail: ${report.summary.testResult.reason}`
+          : "",
+        ...blocking.map(
+          (i) =>
+            `[${i.severity}] ${i.description}\n  expected: ${i.expected}\n  actual: ${i.actual}\n  step: ${i.step}`,
+        ),
+      ]
+        .filter(Boolean)
+        .join("\n\n")
+    : "";
+
+  const failureNode = failed
+    ? `      <failure message="${esc(
+        report.summary.testResult?.reason ?? `${blocking.length} blocking issue(s)`,
+      )}"><![CDATA[${failureBody}]]></failure>\n`
+    : "";
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="skirmish" tests="${tests}" failures="${failures}" time="${report.duration}">
+  <testsuite name="${esc(suiteName)}" tests="${tests}" failures="${failures}" time="${report.duration}" timestamp="${report.timestamp}">
+    <testcase classname="${esc(suiteName)}" name="${esc(testName)}" time="${report.duration}">
+${failureNode}    </testcase>
+  </testsuite>
+</testsuites>
+`;
 }
 
 export function printConsoleSummary(state: AgentState, mode: string): void {

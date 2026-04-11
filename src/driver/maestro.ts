@@ -39,16 +39,23 @@ export class MaestroDriver implements DeviceDriver {
     const result = await this.client.callTool({ name, arguments: args });
 
     // Extract text content from MCP result
+    const parts: string[] = [];
     if (result.content && Array.isArray(result.content)) {
-      const parts: string[] = [];
       for (const block of result.content) {
         if (block.type === "text") {
           parts.push(block.text as string);
         }
       }
-      return parts.join("\n");
     }
-    return JSON.stringify(result);
+    const text = parts.join("\n");
+
+    // MCP tools signal failure via isError flag — surface it as a thrown error
+    // so the agent can see what went wrong and adapt.
+    if (result.isError) {
+      throw new Error(parseMaestroError(text) || `Maestro ${name} failed`);
+    }
+
+    return text || JSON.stringify(result);
   }
 
   private async callToolRaw(
@@ -136,27 +143,21 @@ export class MaestroDriver implements DeviceDriver {
     const deviceId = await this.getBootedDeviceId();
     const escapedText = text.replace(/"/g, '\\"');
     const escapedLabel = fieldLabel.replace(/"/g, '\\"');
-    // Use a single Maestro flow to tap, clear, and type.
-    // Try tapping the label first, then erase+type. If the field label
-    // matches a non-input element, the tap still happens but eraseText
-    // won't work — that's handled by the retry logic in the agent.
+    // Single Maestro flow: tap field, clear existing text, type, dismiss keyboard.
+    // hideKeyboard ensures the next screenshot shows the full UI, not a
+    // keyboard covering half the screen.
     await this.callTool("run_flow", {
       flow_yaml: this.flowYaml(
-        `- tapOn: "${escapedLabel}"\n- eraseText: 50\n- inputText: "${escapedText}"`,
+        `- tapOn: "${escapedLabel}"\n- eraseText: 50\n- inputText: "${escapedText}"\n- hideKeyboard`,
       ),
       device_id: deviceId,
     });
   }
 
-  async tapPlaceholderAndType(placeholder: string, text: string): Promise<void> {
+  async hideKeyboard(): Promise<void> {
     const deviceId = await this.getBootedDeviceId();
-    const escapedText = text.replace(/"/g, '\\"');
-    const escapedPlaceholder = placeholder.replace(/"/g, '\\"');
-    // Tap by hint/placeholder text — more reliable for input fields
     await this.callTool("run_flow", {
-      flow_yaml: this.flowYaml(
-        `- tapOn: "${escapedPlaceholder}"\n- eraseText: 50\n- inputText: "${escapedText}"`,
-      ),
+      flow_yaml: this.flowYaml(`- hideKeyboard`),
       device_id: deviceId,
     });
   }
@@ -253,67 +254,156 @@ export class MaestroDriver implements DeviceDriver {
   }
 }
 
+/**
+ * Parse Maestro's `inspect_view_hierarchy` output, which is CSV-shaped:
+ *
+ *   element_num,depth,bounds,attributes,parent_num
+ *   1,1,"[0,0][393,852]","accessibilityText=StorySpell; enabled=true",0
+ *   23,20,"[120,65][232,91]","accessibilityText=Story Wizard; enabled=true",19
+ *
+ * Fields:
+ *   - element_num: unique numeric id
+ *   - depth:       nesting depth (not directly used — we flatten)
+ *   - bounds:      `[x1,y1][x2,y2]` pixel rectangle
+ *   - attributes:  semicolon-separated `key=value` pairs. Keys we care about:
+ *                  accessibilityText, text, value, hintText, enabled
+ *   - parent_num:  element_num of parent (used for implicit tree shape)
+ *
+ * We return a flat array — the rest of the codebase uses flattenTree
+ * on top of whatever shape we hand back, so a flat list is equivalent
+ * to a deeply-nested tree for our purposes. We filter out container
+ * wrappers with no label to keep signal density high.
+ */
 function parseMaestroHierarchy(text: string): ElementNode[] {
-  // Maestro's inspect_view_hierarchy returns CSV-like format:
-  // Type, Label, Value, X, Y, Width, Height, Enabled
-  // Or it might return a structured text. Parse flexibly.
   const nodes: ElementNode[] = [];
   const lines = text.split("\n").filter((l) => l.trim());
+  if (lines.length === 0) return nodes;
 
-  for (const line of lines) {
-    // Skip header lines
-    if (
-      line.startsWith("---") ||
-      line.toLowerCase().includes("view hierarchy") ||
-      line.toLowerCase().startsWith("type")
-    )
-      continue;
+  // First line is the CSV header — skip it.
+  const dataStart = lines[0].toLowerCase().startsWith("element_num") ? 1 : 0;
 
-    // Try CSV parsing: Type,Label,X,Y,Width,Height
-    const parts = line.split(",").map((p) => p.trim());
-    if (parts.length >= 4) {
-      const node: ElementNode = {
-        type: parts[0] || "Unknown",
-        label: parts[1] || null,
-        value: parts[2] || null,
-        frame: {
-          x: parseFloat(parts[3]) || 0,
-          y: parseFloat(parts[4]) || 0,
-          width: parseFloat(parts[5]) || 0,
-          height: parseFloat(parts[6]) || 0,
-        },
-        enabled: parts[7] !== "false",
-        children: [],
-      };
-      // Only add nodes that have a label or meaningful type
-      if (node.label || node.type !== "Unknown") {
-        nodes.push(node);
-      }
-      continue;
+  for (let i = dataStart; i < lines.length; i++) {
+    const fields = parseCsvLine(lines[i]);
+    // Expected shape: [num, depth, bounds, attributes, parent_num]
+    if (fields.length < 4) continue;
+
+    const bounds = fields[2];
+    const attributes = fields[3];
+    const frame = parseBounds(bounds);
+    const attrs = parseAttributes(attributes);
+
+    // Prefer accessibilityText, fall back to text, then hintText.
+    // hintText alone usually means placeholder text on an empty field.
+    const label = attrs.accessibilityText || attrs.text || attrs.hintText || null;
+    const value = attrs.value || null;
+
+    // Drop pure container wrappers: no label, no hint, no value.
+    // These are layout boxes and just add noise.
+    if (!label && !value && !attrs.hintText) continue;
+
+    // Crude type inference — Maestro doesn't expose the real UIKit class
+    // over this interface, so we label by affordance.
+    let type = "Element";
+    if (attrs.hintText) {
+      type = attrs.hintText.includes("•") ? "SecureTextField" : "TextField";
+    } else if (label) {
+      type = "Button";
     }
 
-    // Fallback: treat indented lines as hierarchy
-    const indent = line.length - line.trimStart().length;
-    const content = line.trim();
-    if (content) {
-      // Extract label from patterns like: Button "Settings" or Text("Hello")
-      const labelMatch = content.match(
-        /["']([^"']+)["']|text=["']([^"']+)["']|label=["']([^"']+)["']/i,
-      );
-      const typeMatch = content.match(/^(\w+)/);
-
-      nodes.push({
-        type: typeMatch?.[1] ?? "Unknown",
-        label: labelMatch?.[1] ?? labelMatch?.[2] ?? labelMatch?.[3] ?? content,
-        value: null,
-        frame: { x: 0, y: 0, width: 0, height: 0 },
-        enabled: true,
-        children: [],
-      });
-    }
+    nodes.push({
+      type,
+      label,
+      value,
+      frame,
+      enabled: attrs.enabled !== "false",
+      children: [],
+    });
   }
 
   return nodes;
+}
+
+/**
+ * Minimal CSV parser that understands quoted fields. Maestro's output
+ * wraps bounds and attributes in double quotes and both contain commas,
+ * so a naive `line.split(",")` shreds them.
+ */
+function parseCsvLine(line: string): string[] {
+  const result: string[] = [];
+  let current = "";
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      inQuotes = !inQuotes;
+    } else if (ch === "," && !inQuotes) {
+      result.push(current);
+      current = "";
+    } else {
+      current += ch;
+    }
+  }
+  result.push(current);
+  return result;
+}
+
+function parseBounds(bounds: string): {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+} {
+  // Format: [x1,y1][x2,y2]
+  const match = bounds.match(/\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]/);
+  if (!match) return { x: 0, y: 0, width: 0, height: 0 };
+  const x1 = parseInt(match[1], 10);
+  const y1 = parseInt(match[2], 10);
+  const x2 = parseInt(match[3], 10);
+  const y2 = parseInt(match[4], 10);
+  return { x: x1, y: y1, width: x2 - x1, height: y2 - y1 };
+}
+
+function parseAttributes(text: string): Record<string, string> {
+  const attrs: Record<string, string> = {};
+  for (const pair of text.split(";")) {
+    const eq = pair.indexOf("=");
+    if (eq === -1) continue;
+    const key = pair.slice(0, eq).trim();
+    const value = pair.slice(eq + 1).trim();
+    if (key) attrs[key] = value;
+  }
+  return attrs;
+}
+
+/**
+ * Extract a concise error message from Maestro's verbose MCP error output.
+ * Maestro errors often contain ANSI art boxes and full stack traces — the
+ * signal-to-noise ratio hurts the LLM, so we strip decorations and pull out
+ * just the "Failed to X: reason" line.
+ */
+function parseMaestroError(text: string): string {
+  if (!text) return "";
+
+  // Try to extract "Failed to <action>: <reason>" pattern
+  const failedMatch = text.match(/Failed to [^:]+:\s*([^\n]+)/);
+  if (failedMatch) {
+    return failedMatch[0].trim();
+  }
+
+  // Try to extract "Element not found: ..." pattern
+  const notFoundMatch = text.match(/Element not found:\s*([^\n]+)/);
+  if (notFoundMatch) {
+    return `Element not found: ${notFoundMatch[1].trim()}`;
+  }
+
+  // Strip ANSI box-drawing characters and collapse whitespace
+  const cleaned = text
+    .replace(/[│╭╮╰╯─━┃┏┓┗┛]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  // Return first 200 chars to keep error concise
+  return cleaned.length > 200 ? cleaned.slice(0, 200) + "..." : cleaned;
 }
 
 export async function checkMaestroInstalled(): Promise<{

@@ -57,6 +57,27 @@ export function flattenTree(nodes: ElementNode[]): ElementNode[] {
   return result;
 }
 
+/**
+ * Compute a stable fingerprint of the accessibility tree for change
+ * detection. Ignores frame coordinates (cursor blinks / animations
+ * shift them slightly) and focuses on structural identity: type,
+ * label, value, enabled flag. Two trees with the same fingerprint
+ * mean no user-visible state change.
+ */
+export function treeFingerprint(nodes: ElementNode[]): string {
+  const parts: string[] = [];
+  const walk = (list: ElementNode[], depth: number): void => {
+    for (const n of list) {
+      parts.push(
+        `${depth}|${n.type}|${n.label ?? ""}|${n.value ?? ""}|${n.enabled ? 1 : 0}`,
+      );
+      walk(n.children, depth + 1);
+    }
+  };
+  walk(nodes, 0);
+  return parts.join("\n");
+}
+
 export function findElementByLabel(
   nodes: ElementNode[],
   query: string,

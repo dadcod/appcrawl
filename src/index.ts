@@ -25,8 +25,9 @@ try {
 }
 import { MaestroDriver, checkMaestroInstalled } from "./driver/maestro.js";
 import { runAgentLoop } from "./agent/loop.js";
-import { generateReport, printConsoleSummary } from "./reporter/reporter.js";
+import { generateReport, printConsoleSummary, computeExitCode } from "./reporter/reporter.js";
 import { DEFAULTS } from "./config/defaults.js";
+import { getLicenseStatus, saveLicense, checkAndConsumeUsage } from "./license/license.js";
 
 const program = new Command();
 
@@ -43,6 +44,7 @@ program
   .option("--max-steps <n>", "Maximum exploration steps", String(DEFAULTS.maxSteps))
   .option("--model <model>", "LLM model to use", DEFAULTS.model)
   .option("--verbose", "Enable verbose logging", false)
+  .option("--ci", "CI mode: no auto-open, emit junit.xml, exit code reflects pass/fail", false)
   .action(async (opts) => {
     await runCommand("explore", opts);
   });
@@ -55,6 +57,7 @@ program
   .option("--max-steps <n>", "Maximum steps", String(DEFAULTS.steeredMaxSteps))
   .option("--model <model>", "LLM model to use", DEFAULTS.model)
   .option("--verbose", "Enable verbose logging", false)
+  .option("--ci", "CI mode: no auto-open, emit junit.xml, exit code reflects pass/fail", false)
   .action(async (instruction: string, opts) => {
     await runCommand("steered", opts, instruction);
   });
@@ -72,6 +75,44 @@ program
     console.log("Generated skirmish.config.json");
     console.log(`  Discovered ${ctx.screens.length} screens, ${ctx.testIds.length} testIDs`);
     console.log("\nEdit the file to add descriptions, credentials, and notes.");
+  });
+
+const license = program
+  .command("license")
+  .description("Manage your Skirmish license key");
+
+license
+  .command("show")
+  .description("Show current license status")
+  .action(() => {
+    const status = getLicenseStatus();
+    if (status.tier === "pro") {
+      console.log(`Tier:    Pro`);
+      console.log(`Email:   ${status.email}`);
+      console.log(`Expires: ${status.expiresAt?.toISOString().slice(0, 10)}`);
+      console.log(`Source:  ${status.source === "env" ? "SKIRMISH_LICENSE env var" : "~/.skirmish/license"}`);
+    } else {
+      console.log(`Tier:    Free (${5} runs/day)`);
+      if (status.reason) {
+        console.log(`Note:    License found but invalid — ${status.reason}`);
+      }
+      console.log(`\nUpgrade to Pro: https://skirmish.dev/buy`);
+    }
+  });
+
+license
+  .command("set <key>")
+  .description("Save a license key to ~/.skirmish/license")
+  .action((key: string) => {
+    try {
+      const status = saveLicense(key);
+      console.log(`License saved.`);
+      console.log(`  Email:   ${status.email}`);
+      console.log(`  Expires: ${status.expiresAt?.toISOString().slice(0, 10)}`);
+    } catch (e: unknown) {
+      console.error(`Failed to save license: ${e instanceof Error ? e.message : String(e)}`);
+      process.exit(2);
+    }
   });
 
 program
@@ -132,6 +173,14 @@ program
       console.log("[  ] Ollama (not running — optional, for local models)");
     }
 
+    // License status
+    const licStatus = getLicenseStatus();
+    if (licStatus.tier === "pro") {
+      console.log(`[OK] License: Pro (expires ${licStatus.expiresAt?.toISOString().slice(0, 10)})`);
+    } else {
+      console.log(`[  ] License: Free tier (5 runs/day) — skirmish license set <key>`);
+    }
+
     if (!hasAnthropic && !hasOpenAI && !hasGoogle && !hasOpenRouter) {
       console.log("\nYou need at least one provider. Options:");
       console.log("  - GOOGLE_GENERATIVE_AI_API_KEY  (free at aistudio.google.com)");
@@ -156,20 +205,37 @@ async function runCommand(
     maxSteps: string;
     model: string;
     verbose: boolean;
+    ci?: boolean;
   },
   instruction?: string,
 ): Promise<void> {
-  // Validate prerequisites
+  // Validate prerequisites first — don't burn a free-tier slot on a
+  // broken setup.
   const maestro = await checkMaestroInstalled();
   if (!maestro.installed) {
     console.error(maestro.message);
-    process.exit(1);
+    // Exit 2 = infrastructure problem (distinct from test failure in CI)
+    process.exit(2);
   }
 
   const maxSteps = parseInt(opts.maxSteps, 10);
   if (isNaN(maxSteps) || maxSteps < 1) {
     console.error("--max-steps must be a positive number");
-    process.exit(1);
+    process.exit(2);
+  }
+
+  // License / usage gate (consumes one free-tier slot on success)
+  const usage = checkAndConsumeUsage();
+  if (!usage.allowed) {
+    console.error(
+      `Free tier limit reached: ${usage.used}/${usage.limit} runs used today.`,
+    );
+    console.error(`Resets at ${usage.resetAt}.`);
+    console.error(`\nUpgrade to Pro for unlimited runs: https://skirmish.dev/buy`);
+    process.exit(2);
+  }
+  if (usage.tier === "free") {
+    console.log(`[free tier] ${usage.used}/${usage.limit} runs used today`);
   }
 
   // Load app context
@@ -232,7 +298,7 @@ async function runCommand(
 
     printConsoleSummary(result.state, mode);
 
-    const { jsonPath, htmlPath } = await generateReport(result.state, {
+    const { jsonPath, htmlPath, junitPath } = await generateReport(result.state, {
       mode,
       instruction: instruction ?? null,
       bundleId: opts.app,
@@ -241,19 +307,28 @@ async function runCommand(
     });
 
     console.log(`Reports saved:`);
-    console.log(`  JSON: ${jsonPath}`);
-    console.log(`  HTML: ${htmlPath}`);
+    console.log(`  JSON:  ${jsonPath}`);
+    console.log(`  HTML:  ${htmlPath}`);
+    console.log(`  JUnit: ${junitPath}`);
 
-    // Auto-open HTML report in browser
-    const { exec: execCb } = await import("node:child_process");
-    execCb(`open "${htmlPath}"`);
-    console.log("\nReport opened in browser.");
+    if (!opts.ci) {
+      // Auto-open HTML report in browser
+      const { exec: execCb } = await import("node:child_process");
+      execCb(`open "${htmlPath}"`);
+      console.log("\nReport opened in browser.");
+    }
+
+    await driver.cleanup();
+
+    if (opts.ci) {
+      const code = computeExitCode(result.state);
+      process.exit(code);
+    }
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : String(error);
     console.error(`\nFatal error: ${msg}`);
-    process.exit(1);
-  } finally {
     await driver.cleanup();
+    process.exit(2);
   }
 }
 

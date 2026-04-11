@@ -69,17 +69,16 @@ You choose ONE action per turn. After the action executes, you'll see the update
 - Pay attention to the accessibility tree for what's tappable`;
 }
 
-export function serializeTree(
-  nodes: Array<{
-    type: string;
-    label: string | null;
-    value: string | null;
-    frame: { x: number; y: number; width: number; height: number };
-    enabled: boolean;
-    children: unknown[];
-  }>,
-  depth = 0,
-): string {
+interface TreeNodeLike {
+  type: string;
+  label: string | null;
+  value: string | null;
+  frame: { x: number; y: number; width: number; height: number };
+  enabled: boolean;
+  children: TreeNodeLike[];
+}
+
+export function serializeTree(nodes: TreeNodeLike[], depth = 0): string {
   const lines: string[] = [];
   for (const node of nodes) {
     const indent = "  ".repeat(depth);
@@ -89,13 +88,46 @@ export function serializeTree(
     const pos = `(${Math.round(node.frame.x)},${Math.round(node.frame.y)} ${Math.round(node.frame.width)}x${Math.round(node.frame.height)})`;
     lines.push(`${indent}${node.type} ${label}${value}${enabled} ${pos}`);
     if (node.children.length > 0) {
-      lines.push(
-        serializeTree(
-          node.children as typeof nodes,
-          depth + 1,
-        ),
-      );
+      lines.push(serializeTree(node.children, depth + 1));
     }
   }
   return lines.join("\n");
+}
+
+/**
+ * Flatten the tree into a concise menu of elements the agent can
+ * actually target. Our Maestro parser emits `TextField` /
+ * `SecureTextField` for inputs and `Button` for everything else with
+ * a label, so any labeled enabled node is fair game. We dedupe on
+ * (type,label,value) since Maestro often emits wrapper elements with
+ * duplicate accessibility text.
+ */
+export function summarizeInteractive(nodes: TreeNodeLike[]): string {
+  const lines: string[] = [];
+  const seen = new Set<string>();
+
+  const walk = (list: TreeNodeLike[]): void => {
+    for (const n of list) {
+      const hasText = Boolean(n.label || n.value);
+      if (hasText) {
+        const label = n.label ?? "";
+        const value = n.value ? ` value="${n.value}"` : "";
+        const disabled = n.enabled ? "" : " [disabled]";
+        const key = `${n.type}|${label}|${n.value ?? ""}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          const labelPart = label ? `"${label}"` : "(no label)";
+          lines.push(`- ${n.type} ${labelPart}${value}${disabled}`);
+        }
+      }
+      walk(n.children);
+    }
+  };
+  walk(nodes);
+
+  if (lines.length === 0) {
+    return "(no interactive elements detected — tap_coordinates from the screenshot)";
+  }
+  // Cap to keep the prompt small — 40 targets is plenty per screen
+  return lines.slice(0, 40).join("\n");
 }

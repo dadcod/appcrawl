@@ -3,11 +3,11 @@ import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import type { DeviceDriver, ElementNode } from "../driver/types.js";
-import { findElementByLabel, flattenTree } from "../driver/types.js";
+import { findElementByLabel, flattenTree, treeFingerprint } from "../driver/types.js";
 import type { MaestroDriver } from "../driver/maestro.js";
 import { agentTools } from "./tools.js";
 import { AgentState } from "./state.js";
-import { explorePrompt, steeredPrompt, serializeTree } from "./prompts.js";
+import { explorePrompt, steeredPrompt, summarizeInteractive } from "./prompts.js";
 import { resolveModel, DEFAULTS } from "../config/defaults.js";
 
 export interface LoopOptions {
@@ -68,9 +68,9 @@ export async function runAgentLoop(options: LoopOptions): Promise<LoopResult> {
     }
 
     // 2. Build prompt
-    const treeText = tree.length > 0
-      ? serializeTree(tree)
-      : "(accessibility tree unavailable)";
+    const targetsText = tree.length > 0
+      ? summarizeInteractive(tree)
+      : "(accessibility tree unavailable — read the screenshot and use tap_coordinates)";
     const stateText = state.summary();
 
     const userMessage = [
@@ -78,8 +78,8 @@ export async function runAgentLoop(options: LoopOptions): Promise<LoopResult> {
       "",
       stateText,
       "",
-      "Accessibility tree:",
-      treeText,
+      "Interactive elements on screen (pass the label to tap/tap_and_type):",
+      targetsText,
       "",
       "Choose your next action.",
     ].join("\n");
@@ -115,7 +115,9 @@ export async function runAgentLoop(options: LoopOptions): Promise<LoopResult> {
       const toolCall = result.toolCalls[0];
       log(verbose, `Action: ${toolCall.toolName}(${JSON.stringify(toolCall.args)})`);
 
-      const actionResult = await executeAction(
+      const preFingerprint = treeFingerprint(tree);
+
+      let actionResult = await executeAction(
         toolCall.toolName,
         toolCall.args as Record<string, unknown>,
         driver,
@@ -124,6 +126,21 @@ export async function runAgentLoop(options: LoopOptions): Promise<LoopResult> {
         state,
         screenshotPath,
       );
+
+      // Screen-change detection: if the action claimed success but the
+      // accessibility tree is byte-identical afterward, annotate the
+      // result. Phrased as an observation rather than a verdict —
+      // selection/toggle actions often update only visual state and
+      // "no effect" phrasing trains the LLM to abandon successful taps.
+      if (!isFailureResult(actionResult) && !isTerminalAction(toolCall.toolName)) {
+        await sleep(DEFAULTS.screenshotDelay);
+        const postTree = await driver
+          .accessibilityTree()
+          .catch(() => null as ElementNode[] | null);
+        if (postTree && treeFingerprint(postTree) === preFingerprint) {
+          actionResult = `${actionResult} [a11y tree unchanged — tap may have updated visual-only state like a selection; check the next screenshot before assuming it failed]`;
+        }
+      }
 
       state.recordAction(
         step,
@@ -139,9 +156,6 @@ export async function runAgentLoop(options: LoopOptions): Promise<LoopResult> {
         log(verbose, `\nTest ${state.testResult.status}: ${state.testResult.reason}`);
         break;
       }
-
-      // Brief pause between steps for the app to settle
-      await sleep(DEFAULTS.screenshotDelay);
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error);
       log(verbose, `Error: ${msg}`);
@@ -172,6 +186,25 @@ async function executeAction(
   state: AgentState,
   screenshotPath: string,
 ): Promise<string> {
+  try {
+    return await executeActionInner(toolName, args, driver, tree, step, state, screenshotPath);
+  } catch (e: unknown) {
+    // Centralized driver error handling: every Maestro/driver failure becomes
+    // a readable tool result so the LLM can see what went wrong and adapt.
+    const msg = e instanceof Error ? e.message : String(e);
+    return `Failed: ${msg}`;
+  }
+}
+
+async function executeActionInner(
+  toolName: string,
+  args: Record<string, unknown>,
+  driver: DeviceDriver,
+  tree: ElementNode[],
+  step: number,
+  state: AgentState,
+  screenshotPath: string,
+): Promise<string> {
   switch (toolName) {
     case "tap": {
       const selector = args.element as string;
@@ -188,13 +221,8 @@ async function executeAction(
             // Fall through to text-based tap
           }
         }
-        try {
-          await maestro.tapOn(selector);
-          return `Tapped "${selector}"`;
-        } catch (e: unknown) {
-          const msg = e instanceof Error ? e.message : String(e);
-          return `Failed to tap "${selector}": ${msg}`;
-        }
+        await maestro.tapOn(selector);
+        return `Tapped "${selector}"`;
       }
       // Fallback: resolve from accessibility tree
       const element = findElementByLabel(tree, selector);
@@ -224,13 +252,8 @@ async function executeAction(
       const field = args.element as string;
       const text = args.text as string;
       if ("tapAndType" in driver) {
-        try {
-          await (driver as MaestroDriver).tapAndType(field, text);
-          return `Tapped "${field}" and typed "${text}"`;
-        } catch (e: unknown) {
-          const msg = e instanceof Error ? e.message : String(e);
-          return `Failed to tap and type "${field}": ${msg}`;
-        }
+        await (driver as MaestroDriver).tapAndType(field, text);
+        return `Tapped "${field}" and typed "${text}"`;
       }
       // Fallback: tap then type
       const el = findElementByLabel(tree, field);
@@ -328,6 +351,24 @@ function createModel(modelFlag?: string): LanguageModel {
     default:
       return createAnthropic()(modelId);
   }
+}
+
+function isFailureResult(result: string): boolean {
+  const lower = result.toLowerCase();
+  return lower.startsWith("failed") || lower.startsWith("fail:");
+}
+
+/**
+ * Actions that don't need screen-change detection: reporting, marking
+ * complete, and asserts aren't expected to change the UI.
+ */
+function isTerminalAction(toolName: string): boolean {
+  return (
+    toolName === "mark_complete" ||
+    toolName === "report_issue" ||
+    toolName === "assert_visible" ||
+    toolName === "wait"
+  );
 }
 
 function sleep(ms: number): Promise<void> {
