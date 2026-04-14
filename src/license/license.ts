@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 /**
- * Skirmish licensing (offline, signature-based).
+ * AppCrawl licensing (offline, signature-based).
  *
  * The license is a compact token of the form:
  *   base64url(payloadJson).base64url(ed25519Signature)
@@ -23,13 +23,16 @@ import { join } from "node:path";
  * invalidates every existing license — that's the point.
  *
  * Free tier: no license required, 5 runs/day tracked in
- * ~/.skirmish/usage.json.
+ * ~/.appcrawl/usage.json.
  */
 
-// Placeholder public key — REPLACE before going live.
-// Generate with: node -e "const { generateKeyPairSync } = require('crypto'); const {publicKey, privateKey} = generateKeyPairSync('ed25519'); console.log(publicKey.export({type:'spki',format:'pem'})); console.log(privateKey.export({type:'pkcs8',format:'pem'}))"
+// Ed25519 public key — used to verify license tokens offline.
+// The matching private key is kept offline and used by the issuance
+// script (scripts/issue-license.mts) when a payment webhook fires.
+// Generate a new pair with:
+//   node -e "const {generateKeyPairSync}=require('crypto');const{publicKey,privateKey}=generateKeyPairSync('ed25519');console.log(publicKey.export({type:'spki',format:'pem'}));console.log(privateKey.export({type:'pkcs8',format:'pem'}))"
 const PUBLIC_KEY_PEM = `-----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEAPLACEHOLDERKEYREPLACEBEFOREGOINGTOPRODUCTION=
+MCowBQYDK2VwAyEAI64IQKzdjsMlw7m5w1YpUXI9BJe9dlsfr87HO6Q4tKg=
 -----END PUBLIC KEY-----`;
 
 const FREE_TIER_DAILY_LIMIT = 5;
@@ -43,12 +46,12 @@ export interface LicenseStatus {
 }
 
 /**
- * Resolve the user's licensing state. Checks SKIRMISH_LICENSE env var
- * first, then ~/.skirmish/license file. Falls back to free tier if
+ * Resolve the user's licensing state. Checks APPCRAWL_LICENSE env var
+ * first, then ~/.appcrawl/license file. Falls back to free tier if
  * neither is present or valid.
  */
 export function getLicenseStatus(): LicenseStatus {
-  const envToken = process.env.SKIRMISH_LICENSE?.trim();
+  const envToken = process.env.APPCRAWL_LICENSE?.trim();
   if (envToken) {
     const result = verifyLicense(envToken);
     if (result.valid) {
@@ -93,7 +96,7 @@ export function getLicenseStatus(): LicenseStatus {
 }
 
 /**
- * Persist a license token to ~/.skirmish/license. Verifies it first
+ * Persist a license token to ~/.appcrawl/license. Verifies it first
  * so we don't save obvious garbage.
  */
 export function saveLicense(token: string): LicenseStatus {
@@ -101,7 +104,7 @@ export function saveLicense(token: string): LicenseStatus {
   if (!result.valid) {
     throw new Error(`Invalid license: ${result.reason}`);
   }
-  const dir = join(homedir(), ".skirmish");
+  const dir = join(homedir(), ".appcrawl");
   mkdirSync(dir, { recursive: true });
   writeFileSync(licenseFilePath(), token.trim(), { mode: 0o600 });
   return {
@@ -179,7 +182,7 @@ function verifyLicense(token: string): VerifyResult {
 }
 
 function licenseFilePath(): string {
-  return join(homedir(), ".skirmish", "license");
+  return join(homedir(), ".appcrawl", "license");
 }
 
 // ---- Free tier usage tracking ---------------------------------------------
@@ -200,7 +203,7 @@ export interface UsageCheckResult {
 /**
  * Check whether the user is allowed to run right now. Pro users are
  * always allowed. Free users get FREE_TIER_DAILY_LIMIT runs per local
- * day, tracked in ~/.skirmish/usage.json. This function INCREMENTS
+ * day, tracked in ~/.appcrawl/usage.json. This function INCREMENTS
  * the counter when it returns allowed=true, so call it exactly once
  * per run.
  */
@@ -217,7 +220,7 @@ export function checkAndConsumeUsage(): UsageCheckResult {
   }
 
   const today = new Date().toISOString().slice(0, 10);
-  const usagePath = join(homedir(), ".skirmish", "usage.json");
+  const usagePath = join(homedir(), ".appcrawl", "usage.json");
   let record: UsageRecord = { date: today, count: 0 };
 
   if (existsSync(usagePath)) {
@@ -245,7 +248,7 @@ export function checkAndConsumeUsage(): UsageCheckResult {
   }
 
   record.count += 1;
-  mkdirSync(join(homedir(), ".skirmish"), { recursive: true });
+  mkdirSync(join(homedir(), ".appcrawl"), { recursive: true });
   writeFileSync(usagePath, JSON.stringify(record));
 
   return {

@@ -51,6 +51,6 @@
     "The app requires authentication to create stories — use tap_and_type with the PLACEHOLDER text inside input fields (e.g. 'hello@example.com' for email, '••••••••' for password), NOT the labels above them"
   ],
   "setup": [
-    "cd ../StorySpell/mobile/functions && npx ts-node scripts/create_test_user.ts test@example.com password123 'Skirmish Test' 2>/dev/null || true"
+    "cd ../StorySpell/mobile/functions && npx ts-node scripts/create_test_user.ts test@example.com password123 'AppCrawl Test' 2>/dev/null || true"
   ]
 }

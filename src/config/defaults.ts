@@ -5,8 +5,11 @@ export const DEFAULTS = {
   model: "claude-sonnet-4-5",
   bundleId: "",
   verbose: false,
-  reportDir: "skirmish-reports",
+  reportDir: "appcrawl-reports",
   screenshotDelay: 1000,
+  /** Delay between steps in ms. Gives animations / network calls time
+   *  to settle before the next screenshot. 0 = no extra delay. */
+  stepDelay: 2000,
   screenWidth: 393,
   screenHeight: 852,
 } as const;

@@ -1,13 +1,26 @@
 import { execSync } from "node:child_process";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import type { Device, DeviceDriver, ElementNode } from "./types.js";
+import type { Device, DeviceDriver, ElementNode, Platform } from "./types.js";
+
+export interface MaestroDriverOptions {
+  platform: Platform;
+  /** Optional explicit device id. If omitted, we auto-detect the first booted
+   *  simulator (iOS) or connected device/emulator (Android). */
+  deviceId?: string;
+}
 
 export class MaestroDriver implements DeviceDriver {
   private client: Client | null = null;
   private transport: StdioClientTransport | null = null;
-  private cachedDeviceId: string | null = null;
+  private cachedDeviceId: string | null;
   private bundleId: string = "";
+  readonly platform: Platform;
+
+  constructor(options: MaestroDriverOptions) {
+    this.platform = options.platform;
+    this.cachedDeviceId = options.deviceId ?? null;
+  }
 
   async connect(): Promise<void> {
     const javaHome = execSync("/usr/libexec/java_home", {
@@ -23,7 +36,7 @@ export class MaestroDriver implements DeviceDriver {
     });
 
     this.client = new Client({
-      name: "skirmish",
+      name: "appcrawl",
       version: "0.1.0",
     });
 
@@ -100,13 +113,19 @@ export class MaestroDriver implements DeviceDriver {
       }
     }
 
-    // Fallback: use simctl screenshot directly
-    const { execSync } = await import("node:child_process");
-    const { readFile } = await import("node:fs/promises");
-    const tmpPath = `/tmp/skirmish-screenshot-${Date.now()}.png`;
-    execSync(`xcrun simctl io booted screenshot "${tmpPath}"`, { timeout: 10_000 });
+    // Fallback: shell out to the platform's native screenshot tool.
+    const { readFile, unlink } = await import("node:fs/promises");
+    const tmpPath = `/tmp/appcrawl-screenshot-${Date.now()}.png`;
+    if (this.platform === "ios") {
+      execSync(`xcrun simctl io booted screenshot "${tmpPath}"`, { timeout: 10_000 });
+    } else {
+      // capture to /sdcard then pull — avoids CRLF mangling issues with exec-out
+      const devicePath = `/sdcard/appcrawl-screen-${Date.now()}.png`;
+      execSync(`adb shell screencap -p "${devicePath}"`, { timeout: 10_000 });
+      execSync(`adb pull "${devicePath}" "${tmpPath}"`, { timeout: 10_000 });
+      execSync(`adb shell rm "${devicePath}"`, { timeout: 5_000 });
+    }
     const buffer = await readFile(tmpPath);
-    const { unlink } = await import("node:fs/promises");
     await unlink(tmpPath).catch(() => {});
     return buffer;
   }
@@ -191,28 +210,34 @@ export class MaestroDriver implements DeviceDriver {
 
   async launchApp(bundleId: string): Promise<void> {
     this.bundleId = bundleId;
-    // Use simctl directly — more reliable than Maestro MCP for launch
-    execSync(`xcrun simctl launch booted ${bundleId}`, {
-      encoding: "utf-8",
-      timeout: 15_000,
-    });
-    // For Expo dev builds, open the dev client URL to connect to the dev server
-    try {
+    if (this.platform === "ios") {
+      execSync(`xcrun simctl launch booted ${bundleId}`, {
+        encoding: "utf-8",
+        timeout: 15_000,
+      });
+    } else {
+      // Android: use monkey to launch via LAUNCHER intent (works without
+      // knowing the main activity name).
       execSync(
-        `xcrun simctl openurl booted "exp+storyspell://expo-development-client/?url=http%3A%2F%2Flocalhost%3A8081"`,
-        { encoding: "utf-8", timeout: 10_000 },
+        `adb shell monkey -p ${bundleId} -c android.intent.category.LAUNCHER 1`,
+        { encoding: "utf-8", timeout: 15_000 },
       );
-    } catch {
-      // Not an Expo dev build or dev server not running — that's fine
     }
   }
 
   async terminateApp(bundleId: string): Promise<void> {
     try {
-      execSync(`xcrun simctl terminate booted ${bundleId}`, {
-        encoding: "utf-8",
-        timeout: 10_000,
-      });
+      if (this.platform === "ios") {
+        execSync(`xcrun simctl terminate booted ${bundleId}`, {
+          encoding: "utf-8",
+          timeout: 10_000,
+        });
+      } else {
+        execSync(`adb shell am force-stop ${bundleId}`, {
+          encoding: "utf-8",
+          timeout: 10_000,
+        });
+      }
     } catch {
       // App might not be running
     }
@@ -220,10 +245,29 @@ export class MaestroDriver implements DeviceDriver {
 
   private async getBootedDeviceId(): Promise<string> {
     if (this.cachedDeviceId) return this.cachedDeviceId;
-    const output = execSync("xcrun simctl list devices booted", { encoding: "utf-8" });
-    const match = output.match(/\(([A-F0-9-]{36})\)\s+\(Booted\)/);
-    if (!match) throw new Error("No booted simulator found");
-    this.cachedDeviceId = match[1];
+    if (this.platform === "ios") {
+      const output = execSync("xcrun simctl list devices booted", { encoding: "utf-8" });
+      const match = output.match(/\(([A-F0-9-]{36})\)\s+\(Booted\)/);
+      if (!match) throw new Error("No booted iOS simulator found. Boot one with: open -a Simulator");
+      this.cachedDeviceId = match[1];
+    } else {
+      // Parse `adb devices`: skip the header line, take the first entry
+      // that's in "device" state (not "offline" or "unauthorized").
+      const output = execSync("adb devices", { encoding: "utf-8" });
+      const lines = output.split("\n").slice(1);
+      for (const line of lines) {
+        const match = line.match(/^(\S+)\s+device\s*$/);
+        if (match) {
+          this.cachedDeviceId = match[1];
+          break;
+        }
+      }
+      if (!this.cachedDeviceId) {
+        throw new Error(
+          "No Android device/emulator connected. Start an emulator or plug in a device and run: adb devices",
+        );
+      }
+    }
     return this.cachedDeviceId;
   }
 

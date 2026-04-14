@@ -1,0 +1,19 @@
+# Web test suite for Hacker News — tests parallel execution
+tests:
+  - name: "Navigate to new stories"
+    app: https://news.ycombinator.com
+    goal: "Click the 'new' link in the top navigation, verify the page shows newest stories"
+    assertions:
+      - "new"
+
+  - name: "Navigate to show stories"
+    app: https://news.ycombinator.com
+    goal: "Click the 'show' link in the top navigation, verify Show HN posts are visible"
+    assertions:
+      - "Show HN"
+
+  - name: "Navigate to jobs page"
+    app: https://news.ycombinator.com
+    goal: "Click the 'jobs' link in the top navigation, verify job listings are visible"
+    assertions:
+      - "jobs"

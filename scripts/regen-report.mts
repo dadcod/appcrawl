@@ -9,9 +9,16 @@ import { join, resolve } from "node:path";
 // generateReport. Simpler: import the internal helpers directly.
 import type { Report } from "../src/reporter/types.js";
 
-const runDir = resolve(process.argv[2] ?? "");
-if (!runDir) {
-  console.error("Usage: npx tsx scripts/regen-report.mts <runDir>");
+const args = process.argv.slice(2);
+const runDirArg = args.find((a) => !a.startsWith("--"));
+const jiraArg = args.find((a) => a.startsWith("--jira="))?.slice("--jira=".length);
+const jiraProjectArg = args
+  .find((a) => a.startsWith("--jira-project="))
+  ?.slice("--jira-project=".length);
+
+const runDir = resolve(runDirArg ?? "");
+if (!runDirArg) {
+  console.error("Usage: npx tsx scripts/regen-report.mts <runDir> [--jira=<url>] [--jira-project=<key>]");
   process.exit(1);
 }
 
@@ -53,6 +60,7 @@ await generateReport(state, {
   bundleId: reportJson.bundleId,
   model: reportJson.model,
   runDir,
+  jira: jiraArg ? { url: jiraArg, project: jiraProjectArg, issueType: "Bug" } : undefined,
 });
 
 console.log(`Regenerated: ${runDir}/report.html`);

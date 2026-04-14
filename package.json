@@ -1,10 +1,10 @@
 {
-  "name": "skirmish",
+  "name": "appcrawl",
   "version": "0.1.0",
   "description": "AI-powered mobile app testing. Let an LLM explore and test your iOS app autonomously.",
   "type": "module",
   "bin": {
-    "skirmish": "./dist/index.js"
+    "appcrawl": "./dist/index.js"
   },
   "scripts": {
     "dev": "tsx src/index.ts",
@@ -15,15 +15,21 @@
     "@ai-sdk/anthropic": "^1.0.0",
     "@ai-sdk/google": "^1.0.0",
     "@ai-sdk/openai": "^1.0.0",
+    "@clack/prompts": "^1.2.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@openrouter/ai-sdk-provider": "^2.5.1",
     "ai": "^4.0.0",
     "commander": "^13.0.0",
     "ollama-ai-provider": "^1.2.0",
+    "pixelmatch": "^7.1.0",
+    "playwright": "^1.59.1",
+    "pngjs": "^7.0.0",
+    "yaml": "^2.8.3",
     "zod": "^3.23.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/pngjs": "^6.0.5",
     "tsx": "^4.0.0",
     "typescript": "^5.9.0"
   }

@@ -1,6 +1,7 @@
 node_modules/
 dist/
-skirmish-reports/
+appcrawl-reports/
+.appcrawl/
 *.tsbuildinfo
 .env
 .env.local

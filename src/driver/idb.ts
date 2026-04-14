@@ -15,7 +15,7 @@ export class IdbDriver implements DeviceDriver {
   }
 
   async screenshot(): Promise<Buffer> {
-    const path = join(tmpdir(), `skirmish-${Date.now()}.png`);
+    const path = join(tmpdir(), `appcrawl-${Date.now()}.png`);
     await this.run("screenshot", [path]);
     const buffer = await readFile(path);
     await unlink(path).catch(() => {});

@@ -16,10 +16,15 @@ export interface LoopOptions {
   mode: "explore" | "steered";
   instruction?: string;
   maxSteps: number;
+  /** Delay between steps in ms. Gives animations / network calls time
+   *  to settle before the next screenshot. 0 = no extra delay. */
+  stepDelay?: number;
   model?: string;
   verbose: boolean;
   screenshotDir: string;
   appContext?: string;
+  /** Override the system prompt entirely (used for web prompts). */
+  systemPrompt?: string;
 }
 
 export interface LoopResult {
@@ -30,13 +35,15 @@ export interface LoopResult {
 export async function runAgentLoop(options: LoopOptions): Promise<LoopResult> {
   const { driver, bundleId, mode, instruction, maxSteps, verbose, screenshotDir, appContext } =
     options;
+  const stepDelay = options.stepDelay ?? DEFAULTS.stepDelay;
 
   const state = new AgentState();
   const model = createModel(options.model);
   const systemPrompt =
-    mode === "explore"
+    options.systemPrompt ??
+    (mode === "explore"
       ? explorePrompt(appContext)
-      : steeredPrompt(instruction ?? "Explore the app", appContext);
+      : steeredPrompt(instruction ?? "Explore the app", appContext));
 
   // Launch the app
   log(verbose, "Launching app...");
@@ -47,6 +54,13 @@ export async function runAgentLoop(options: LoopOptions): Promise<LoopResult> {
   let completed = false;
 
   for (let step = 1; step <= maxSteps; step++) {
+    // Wait between steps so animations, network calls, and screen
+    // transitions settle before the next screenshot. Skip step 1
+    // since we already waited after launch.
+    if (step > 1 && stepDelay > 0) {
+      await sleep(stepDelay);
+    }
+
     log(verbose, `\n--- Step ${step}/${maxSteps} ---`);
 
     // 1. Observe: screenshot + accessibility tree
@@ -142,6 +156,21 @@ export async function runAgentLoop(options: LoopOptions): Promise<LoopResult> {
         }
       }
 
+      // Loop detection: if the same tool+args has been called 3+ times
+      // consecutively with no screen change, inject a strong hint so
+      // the LLM breaks out instead of burning remaining steps.
+      const recentActions = state.actions.slice(-3);
+      if (recentActions.length >= 3) {
+        const sig = (a: { tool: string; params: Record<string, unknown> }) =>
+          `${a.tool}:${JSON.stringify(a.params)}`;
+        const last3 = recentActions.map(sig);
+        const current = sig({ tool: toolCall.toolName, params: toolCall.args as Record<string, unknown> });
+        if (last3.every((s) => s === current)) {
+          actionResult = `${actionResult} ⚠ LOOP DETECTED: you've done the exact same action ${last3.length + 1} times in a row with no screen change. Try a DIFFERENT action — tap a different element, scroll, or report an issue if you're stuck.`;
+          log(verbose, "⚠ Loop detected — injecting break hint");
+        }
+      }
+
       state.recordAction(
         step,
         toolCall.toolName,
@@ -161,8 +190,16 @@ export async function runAgentLoop(options: LoopOptions): Promise<LoopResult> {
       log(verbose, `Error: ${msg}`);
       state.recordAction(step, "error", {}, msg);
 
-      if (msg.includes("credit balance") || msg.includes("authentication") || msg.includes("401")) {
-        log(verbose, "API key issue — stopping.");
+      if (
+        msg.includes("credit balance") ||
+        msg.includes("authentication") ||
+        msg.includes("API key") ||
+        msg.includes("api key") ||
+        msg.includes("apiKey") ||
+        msg.includes("401") ||
+        msg.includes("403")
+      ) {
+        log(verbose, "API key / auth issue — stopping.");
         console.error(`\nAPI error: ${msg}`);
         break;
       }
@@ -322,9 +359,72 @@ async function executeActionInner(
   }
 }
 
+/**
+ * Extract a meaningful screen name from the accessibility tree.
+ *
+ * Strategy (in priority order):
+ *   1. Find a NavigationBar element — its label is usually the page title
+ *      (e.g. "General", "About", "Display & Brightness").
+ *   2. Look for an alert/dialog — its label is the alert title.
+ *   3. Tab bar selection.
+ *   4. Position-based heuristic: find a title-like element near the top
+ *      of the screen. This covers Maestro, which reports everything as
+ *      "Button"/"Element" without UIKit class info.
+ *   5. Fall back to root element label.
+ */
 function identifyScreen(tree: ElementNode[]): string | null {
   if (tree.length === 0) return null;
-  // Use the root element's label or type as screen identifier
+
+  const flat = flattenTree(tree);
+
+  // 1. NavigationBar title — strongest signal (idb driver).
+  const navBar = flat.find(
+    (n) =>
+      (n.type === "NavigationBar" || n.type === "javax.swing.JToolBar") &&
+      n.label &&
+      n.label.trim().length > 0,
+  );
+  if (navBar) return navBar.label!.trim();
+
+  // 2. Alert / sheet / dialog.
+  const alert = flat.find(
+    (n) =>
+      (n.type === "Alert" || n.type === "Sheet" || n.type === "Dialog") &&
+      n.label &&
+      n.label.trim().length > 0,
+  );
+  if (alert) return alert.label!.trim();
+
+  // 3. Tab bar selection.
+  const selectedTab = flat.find(
+    (n) =>
+      n.type === "Tab" &&
+      n.value === "1" &&
+      n.label &&
+      n.label.trim().length > 0,
+  );
+  if (selectedTab) return selectedTab.label!.trim();
+
+  // 4. Position-based heuristic for Maestro: look for a labeled element
+  //    near the top of the screen that looks like a page title. Navigation
+  //    titles on iOS sit roughly in the 40-110px band (below status bar),
+  //    centered horizontally, and are usually NOT common buttons.
+  const skipLabels = new Set(["Back", "Cancel", "Done", "Close", "Edit", "More", "Search"]);
+  const topElements = flat.filter(
+    (n) =>
+      n.label &&
+      n.label.trim().length > 0 &&
+      n.frame.y >= 30 &&
+      n.frame.y <= 120 &&
+      !skipLabels.has(n.label.trim()),
+  );
+  // Pick the first one that isn't the app name repeated (root label).
+  const rootLabel = tree[0]?.label ?? "";
+  const titleElement = topElements.find((n) => n.label!.trim() !== rootLabel)
+    ?? topElements[0];
+  if (titleElement) return titleElement.label!.trim();
+
+  // 5. Fall back to root label.
   const root = tree[0];
   return root.label ?? root.type ?? null;
 }

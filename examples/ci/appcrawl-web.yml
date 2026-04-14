@@ -1,0 +1,29 @@
+# Example: Run AppCrawl web tests on every PR
+# Save as .github/workflows/appcrawl.yml
+
+name: AppCrawl AI Tests
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  appcrawl:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Run AppCrawl
+        uses: dadcod/appcrawl@v1
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          APPCRAWL_LICENSE: ${{ secrets.APPCRAWL_LICENSE }}
+        with:
+          suite: tests/web-suite.yaml
+          platform: web
+          model: gpt-4o
+          comment: 'true'

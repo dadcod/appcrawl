@@ -1,0 +1,197 @@
+name: 'AppCrawl AI Testing'
+description: 'Run AI-powered mobile and web app tests with AppCrawl'
+branding:
+  icon: 'search'
+  color: 'blue'
+
+inputs:
+  suite:
+    description: 'Path to test suite YAML file or directory'
+    required: false
+  command:
+    description: 'Full appcrawl command to run (alternative to suite)'
+    required: false
+  model:
+    description: 'LLM model to use (e.g. gpt-4o, gemini-2.0-flash)'
+    default: 'gpt-4o'
+  platform:
+    description: 'Target platform: ios, android, or web'
+    default: 'web'
+  max-steps:
+    description: 'Maximum steps per test'
+    default: '30'
+  step-delay:
+    description: 'Delay between steps in ms'
+    default: '2000'
+  baseline:
+    description: 'Path to visual regression baseline directory'
+    required: false
+  threshold:
+    description: 'Visual regression threshold (percentage)'
+    default: '0.5'
+  artifact-name:
+    description: 'Name for the uploaded report artifact'
+    default: 'appcrawl-report'
+  comment:
+    description: 'Post results as PR comment (true/false)'
+    default: 'true'
+
+outputs:
+  result:
+    description: 'Overall result: pass or fail'
+    value: ${{ steps.run.outputs.result }}
+  report-dir:
+    description: 'Path to the generated report directory'
+    value: ${{ steps.run.outputs.report-dir }}
+  summary:
+    description: 'One-line summary of results'
+    value: ${{ steps.run.outputs.summary }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install AppCrawl
+      shell: bash
+      run: |
+        npm install -g appcrawl@latest 2>/dev/null || npm install -g ./
+
+    - name: Install Playwright browsers (web only)
+      if: inputs.platform == 'web'
+      shell: bash
+      run: npx playwright install chromium
+
+    - name: Run tests
+      id: run
+      shell: bash
+      env:
+        ANTHROPIC_API_KEY: ${{ env.ANTHROPIC_API_KEY }}
+        OPENAI_API_KEY: ${{ env.OPENAI_API_KEY }}
+        GOOGLE_GENERATIVE_AI_API_KEY: ${{ env.GOOGLE_GENERATIVE_AI_API_KEY }}
+        OPENROUTER_API_KEY: ${{ env.OPENROUTER_API_KEY }}
+        APPCRAWL_LICENSE: ${{ env.APPCRAWL_LICENSE }}
+      run: |
+        set +e
+
+        if [ -n "${{ inputs.suite }}" ]; then
+          appcrawl suite "${{ inputs.suite }}" \
+            --platform "${{ inputs.platform }}" \
+            --model "${{ inputs.model }}" \
+            --step-delay "${{ inputs.step-delay }}" \
+            --ci 2>&1 | tee appcrawl-output.log
+          EXIT_CODE=$?
+        elif [ -n "${{ inputs.command }}" ]; then
+          ${{ inputs.command }} --ci 2>&1 | tee appcrawl-output.log
+          EXIT_CODE=$?
+        else
+          echo "Either 'suite' or 'command' input is required"
+          exit 2
+        fi
+
+        # Find the latest report directory
+        REPORT_DIR=$(ls -dt appcrawl-reports/*/ 2>/dev/null | head -1)
+        echo "report-dir=${REPORT_DIR}" >> "$GITHUB_OUTPUT"
+
+        if [ $EXIT_CODE -eq 0 ]; then
+          echo "result=pass" >> "$GITHUB_OUTPUT"
+          echo "summary=All tests passed" >> "$GITHUB_OUTPUT"
+        else
+          echo "result=fail" >> "$GITHUB_OUTPUT"
+          echo "summary=Some tests failed (exit code $EXIT_CODE)" >> "$GITHUB_OUTPUT"
+        fi
+
+        # Store exit code for later — don't fail yet if we need to run visual diff
+        echo "EXIT_CODE=$EXIT_CODE" >> "$GITHUB_ENV"
+
+    - name: Visual regression
+      if: inputs.baseline != ''
+      id: visual
+      shell: bash
+      run: |
+        REPORT_DIR="${{ steps.run.outputs.report-dir }}"
+        if [ -d "${REPORT_DIR}screenshots" ]; then
+          appcrawl visual-diff \
+            --baseline "${{ inputs.baseline }}" \
+            --current "${REPORT_DIR}screenshots" \
+            --threshold "${{ inputs.threshold }}" \
+            --ci 2>&1 | tee -a appcrawl-output.log
+          if [ $? -ne 0 ]; then
+            echo "EXIT_CODE=1" >> "$GITHUB_ENV"
+          fi
+        fi
+
+    - name: Upload report artifact
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: |
+          appcrawl-reports/
+          appcrawl-output.log
+        retention-days: 30
+
+    - name: Upload JUnit results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}-junit
+        path: appcrawl-reports/**/junit.xml
+        retention-days: 30
+
+    - name: Post PR comment
+      if: inputs.comment == 'true' && github.event_name == 'pull_request'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          const output = fs.readFileSync('appcrawl-output.log', 'utf8');
+          const result = '${{ steps.run.outputs.result }}';
+          const icon = result === 'pass' ? ':white_check_mark:' : ':x:';
+
+          // Extract the summary sections from output
+          const suiteMatch = output.match(/SUITE RESULTS[\s\S]*?={50,}/g);
+          const summary = suiteMatch ? suiteMatch[suiteMatch.length - 1] : output.slice(-500);
+
+          const body = [
+            `## ${icon} AppCrawl Test Results`,
+            '',
+            '```',
+            summary.trim(),
+            '```',
+            '',
+            `Model: \`${{ inputs.model }}\` | Platform: \`${{ inputs.platform }}\``,
+            '',
+            '_Generated by [AppCrawl](https://appcrawl.dev) AI Testing_',
+          ].join('\n');
+
+          // Find and update existing comment, or create new one
+          const { data: comments } = await github.rest.issues.listComments({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: context.issue.number,
+          });
+
+          const existing = comments.find(c =>
+            c.body.includes('AppCrawl Test Results') &&
+            c.user.type === 'Bot'
+          );
+
+          if (existing) {
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: existing.id,
+              body,
+            });
+          } else {
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
+          }
+
+    - name: Set exit code
+      if: always()
+      shell: bash
+      run: exit ${EXIT_CODE:-0}

@@ -1,0 +1,99 @@
+# AppCrawl on GitHub Actions — iOS
+#
+# Runs the AI-driven exploration test against a freshly built iOS app on
+# every PR. On failure, the junit.xml is surfaced in the PR checks and the
+# full run artifact (screenshots, HTML report, report.json) is uploaded.
+#
+# Prerequisites:
+#   - macOS runner (for xcodebuild + iOS simulator)
+#   - Java 17+ installed on runner (required by Maestro)
+#   - An LLM API key in repo secrets (ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.)
+#   - Optional: APPCRAWL_LICENSE secret for Pro (unlimited runs)
+#
+# Notes:
+#   - Free tier = 5 runs/day per machine. Shared CI runners get fresh state
+#     each job so the 5/day limit is effectively per-job. Pro removes this.
+#   - AppCrawl auto-boots a simulator if none is running (see
+#     device-manager.ts). No need to pre-boot in the job.
+
+name: AppCrawl — iOS
+
+on:
+  pull_request:
+    paths:
+      - "ios/**"
+      - "mobile/**"
+  workflow_dispatch: {}
+
+jobs:
+  explore:
+    runs-on: macos-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java (Maestro requirement)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Maestro
+        run: |
+          curl -Ls "https://get.maestro.mobile.dev" | bash
+          echo "$HOME/.maestro/bin" >> $GITHUB_PATH
+
+      - name: Install AppCrawl
+        run: npm install -g appcrawl
+
+      # Build the iOS app. Replace this with whatever your build system is —
+      # the important part is that $APP_PATH ends up pointing at a .app bundle.
+      - name: Build iOS app
+        run: |
+          cd mobile
+          xcodebuild \
+            -workspace ios/YourApp.xcworkspace \
+            -scheme YourApp \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -derivedDataPath build \
+            build
+          echo "APP_PATH=$(pwd)/build/Build/Products/Debug-iphonesimulator/YourApp.app" >> $GITHUB_ENV
+
+      - name: Run AppCrawl exploration
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          APPCRAWL_LICENSE: ${{ secrets.APPCRAWL_LICENSE }} # optional (Pro)
+        run: |
+          appcrawl explore \
+            --app com.example.yourapp \
+            --platform ios \
+            --install "$APP_PATH" \
+            --max-steps 30 \
+            --ci \
+            --verbose
+
+      # Always upload the report, even on failure — that's when you need it most.
+      - name: Upload AppCrawl report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: appcrawl-report
+          path: appcrawl-reports/
+          retention-days: 14
+
+      # Surface junit.xml as a PR check so failures show inline.
+      - name: Publish test results
+        if: always()
+        uses: dorny/test-reporter@v1
+        with:
+          name: AppCrawl
+          path: "appcrawl-reports/*/junit.xml"
+          reporter: java-junit
+          fail-on-error: true

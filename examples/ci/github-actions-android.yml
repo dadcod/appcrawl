@@ -1,0 +1,103 @@
+# AppCrawl on GitHub Actions — Android
+#
+# Runs the AI-driven exploration test against a freshly built Android APK
+# on every PR. Uses reactivecircus/android-emulator-runner to spin up an
+# emulator inside the Linux runner (KVM-accelerated).
+#
+# Prerequisites:
+#   - Ubuntu runner with KVM support (ubuntu-latest works)
+#   - Java 17+ (required by both Maestro and the Android SDK)
+#   - An LLM API key in repo secrets
+#   - Optional: APPCRAWL_LICENSE for Pro
+#
+# Tip: emulator boot eats ~3 minutes on cold cache. Enable the emulator
+# snapshot cache (built into the action) to cut that to ~30s on repeat runs.
+
+name: AppCrawl — Android
+
+on:
+  pull_request:
+    paths:
+      - "android/**"
+      - "mobile/**"
+  workflow_dispatch: {}
+
+jobs:
+  explore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Maestro
+        run: |
+          curl -Ls "https://get.maestro.mobile.dev" | bash
+          echo "$HOME/.maestro/bin" >> $GITHUB_PATH
+
+      - name: Install AppCrawl
+        run: npm install -g appcrawl
+
+      - name: Build Android APK
+        run: |
+          cd mobile/android
+          ./gradlew assembleDebug
+          echo "APK_PATH=$(pwd)/app/build/outputs/apk/debug/app-debug.apk" >> $GITHUB_ENV
+
+      # reactivecircus/android-emulator-runner boots an emulator *inside* the
+      # action, then runs your script with the emulator already connected.
+      # AppCrawl will see it via `adb devices` and skip its own auto-boot.
+      - name: Run AppCrawl on emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          APPCRAWL_LICENSE: ${{ secrets.APPCRAWL_LICENSE }}
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          script: |
+            appcrawl explore \
+              --app com.example.yourapp \
+              --platform android \
+              --install "$APK_PATH" \
+              --max-steps 30 \
+              --ci \
+              --verbose
+
+      - name: Upload AppCrawl report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: appcrawl-report
+          path: appcrawl-reports/
+          retention-days: 14
+
+      - name: Publish test results
+        if: always()
+        uses: dorny/test-reporter@v1
+        with:
+          name: AppCrawl
+          path: "appcrawl-reports/*/junit.xml"
+          reporter: java-junit
+          fail-on-error: true

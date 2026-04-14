@@ -1,3 +1,5 @@
+export type Platform = "ios" | "android" | "web";
+
 export interface Frame {
   x: number;
   y: number;

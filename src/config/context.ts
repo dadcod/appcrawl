@@ -1,6 +1,19 @@
 import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { resolve, join } from "node:path";
+import type { Platform } from "../driver/types.js";
 
+/**
+ * Runtime config resolved for a single appcrawl run.
+ *
+ * The file on disk (`appcrawl.config.json`) supports a shared top-level
+ * block plus optional `ios` / `android` overrides, but once a run starts
+ * we collapse that down to a single AppContext for a specific platform.
+ * Resolution order for `bundleId`, `deviceName`, `installPath`, `setup`:
+ *   1. CLI flag (handled in index.ts)
+ *   2. `config.<platform>.X`
+ *   3. `config.X`    (shared fallback)
+ *   4. default / undefined
+ */
 export interface AppContext {
   name: string;
   bundleId: string;
@@ -10,6 +23,21 @@ export interface AppContext {
   credentials: { email?: string; password?: string } | null;
   notes: string[];
   setup: string[];
+  platform?: Platform;
+  deviceName?: string;
+  installPath?: string;
+  jira?: JiraConfig;
+  /** Delay between steps in ms. */
+  stepDelay?: number;
+  /** Which platform blocks the file declares. Used to decide whether
+   *  platform is ambiguous when no --platform flag is passed. */
+  declaredPlatforms: Platform[];
+}
+
+export interface JiraConfig {
+  url: string;
+  project?: string;
+  issueType?: string;
 }
 
 interface ScreenInfo {
@@ -17,35 +45,127 @@ interface ScreenInfo {
   description: string;
 }
 
-const CONFIG_FILENAME = "skirmish.config.json";
+interface PlatformBlock {
+  bundleId?: string;
+  install?: string;
+  device?: string;
+  setup?: string[];
+}
 
-export function loadAppContext(bundleId: string, appDir?: string): AppContext {
-  // 1. Try loading manual config
+interface RawConfig {
+  name?: string;
+  description?: string;
+  screens?: ScreenInfo[];
+  testIds?: string[];
+  credentials?: { email?: string; password?: string } | null;
+  notes?: string[];
+  setup?: string[];
+  platform?: Platform;
+  device?: string;
+  install?: string;
+  jira?: JiraConfig;
+  stepDelay?: number;
+  ios?: PlatformBlock;
+  android?: PlatformBlock;
+}
+
+const CONFIG_FILENAME = "appcrawl.config.json";
+
+/**
+ * Load config + resolve against a target platform. If `platform` is
+ * omitted we return an unresolved context (platform-specific fields
+ * left undefined); the caller is responsible for asking the user.
+ *
+ * `declaredPlatforms` tells the caller which platform blocks exist
+ * so it can auto-pick the single one or error loudly on ambiguity.
+ */
+export function loadAppContext(
+  bundleId: string | undefined,
+  appDir?: string,
+  platform?: Platform,
+): AppContext {
   const configPath = resolve(CONFIG_FILENAME);
   if (existsSync(configPath)) {
     try {
-      const raw = JSON.parse(readFileSync(configPath, "utf-8"));
-      return {
-        name: raw.name ?? bundleId,
-        bundleId,
-        description: raw.description ?? "",
-        screens: raw.screens ?? [],
-        testIds: raw.testIds ?? [],
-        credentials: raw.credentials ?? null,
-        notes: raw.notes ?? [],
-        setup: raw.setup ?? [],
-      };
+      const raw: RawConfig = JSON.parse(readFileSync(configPath, "utf-8"));
+      // If the caller passed an explicit bundleId via --app, check whether
+      // the config file is actually *for* that app. If none of the bundleIds
+      // in the config match, skip the file so we don't pollute an unrelated
+      // run with irrelevant screens/testIDs/setup hooks.
+      if (bundleId && !configMatchesBundleId(raw, bundleId)) {
+        // Config exists but is for a different app — ignore it.
+      } else {
+        return resolveContext(raw, bundleId, platform);
+      }
     } catch {
       // Invalid config, fall through to auto-discovery
     }
   }
 
-  // 2. Auto-discover from codebase
   if (appDir) {
-    return discoverFromCodebase(bundleId, appDir);
+    return discoverFromCodebase(bundleId ?? "", appDir);
   }
 
-  // 3. Minimal context
+  return emptyContext(bundleId ?? "");
+}
+
+/**
+ * Check whether a config file is relevant for the given bundleId.
+ * When the caller passed an explicit `--app`, we only load the config
+ * if it declares a matching bundleId somewhere (platform blocks or name
+ * that looks like the same app). Configs with zero declared bundleIds
+ * are NOT loaded when an explicit `--app` is given — there's no way
+ * to confirm they belong to the same app.
+ */
+function configMatchesBundleId(raw: RawConfig, bundleId: string): boolean {
+  const declared: string[] = [];
+  if (raw.ios?.bundleId) declared.push(raw.ios.bundleId);
+  if (raw.android?.bundleId) declared.push(raw.android.bundleId);
+  return declared.length > 0 && declared.includes(bundleId);
+}
+
+function resolveContext(
+  raw: RawConfig,
+  cliBundleId: string | undefined,
+  platform: Platform | undefined,
+): AppContext {
+  const declared: Platform[] = [];
+  if (raw.ios) declared.push("ios");
+  if (raw.android) declared.push("android");
+
+  const block: PlatformBlock | undefined = platform
+    ? platform === "ios"
+      ? raw.ios
+      : raw.android
+    : undefined;
+
+  // Resolution chain: CLI flag wins (explicit user override) → platform
+  // block → empty. If none yield a bundleId, the caller must error.
+  const bundleId = cliBundleId ?? block?.bundleId ?? "";
+  const deviceName = block?.device ?? raw.device;
+  const installPath = block?.install ?? raw.install;
+  // Merge setup hooks: shared first, then platform-specific.
+  const setup = [...(raw.setup ?? []), ...(block?.setup ?? [])];
+
+  return {
+    name: raw.name ?? bundleId,
+    bundleId,
+    description: raw.description ?? "",
+    screens: raw.screens ?? [],
+    testIds: raw.testIds ?? [],
+    credentials: raw.credentials ?? null,
+    notes: raw.notes ?? [],
+    setup,
+    platform: platform ?? raw.platform,
+    deviceName,
+    installPath,
+    jira: raw.jira,
+    stepDelay: raw.stepDelay,
+    declaredPlatforms: declared,
+  };
+}
+
+function emptyContext(bundleId: string): AppContext {
   return {
     name: bundleId,
     bundleId,
@@ -55,6 +175,7 @@ export function loadAppContext(bundleId: string, appDir?: string): AppContext {
     credentials: null,
     notes: [],
     setup: [],
+    declaredPlatforms: [],
   };
 }
 
@@ -106,6 +227,7 @@ function discoverFromCodebase(bundleId: string, appDir: string): AppContext {
     credentials: null,
     notes: [],
     setup: [],
+    declaredPlatforms: [],
   };
 }
 
@@ -195,22 +317,44 @@ export function contextToPrompt(ctx: AppContext): string {
   return lines.join("\n");
 }
 
+/**
+ * Raw JSON-serializable config shape for writing `appcrawl.config.json`.
+ * Kept intentionally narrow — init writes only the fields it was asked
+ * about, leaving the rest for the user to add by hand or via follow-up
+ * subcommands (`appcrawl jira setup`, etc.).
+ */
+export interface ConfigDraft {
+  name?: string;
+  description?: string;
+  screens?: ScreenInfo[];
+  testIds?: string[];
+  credentials?: { email?: string; password?: string };
+  notes?: string[];
+  jira?: JiraConfig;
+  ios?: PlatformBlock;
+  android?: PlatformBlock;
+}
+
+export function serializeConfig(draft: ConfigDraft): string {
+  // Strip undefined keys so the file isn't cluttered with nulls.
+  const clean = JSON.parse(JSON.stringify(draft));
+  return JSON.stringify(clean, null, 2) + "\n";
+}
+
 export function generateConfigTemplate(ctx: AppContext): string {
-  return JSON.stringify(
-    {
-      name: ctx.name,
-      description: ctx.description || "Describe your app here",
-      screens: ctx.screens.length > 0
+  const draft: ConfigDraft = {
+    name: ctx.name,
+    description: ctx.description || "Describe your app here",
+    screens:
+      ctx.screens.length > 0
         ? ctx.screens
         : [{ name: "ExampleScreen", description: "Describe this screen" }],
-      testIds: ctx.testIds.length > 0 ? ctx.testIds : ["example-test-id"],
-      credentials: { email: "test@example.com", password: "password123" },
-      notes: [
-        "Add any notes about the app that would help the AI tester",
-        "e.g. 'The paywall appears after the 3rd story creation'",
-      ],
-    },
-    null,
-    2,
-  );
+    testIds: ctx.testIds.length > 0 ? ctx.testIds : ["example-test-id"],
+    credentials: { email: "test@example.com", password: "password123" },
+    notes: [
+      "Add any notes about the app that would help the AI tester",
+      "e.g. 'The paywall appears after the 3rd story creation'",
+    ],
+  };
+  return serializeConfig(draft);
 }
