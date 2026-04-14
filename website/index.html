@@ -9,7 +9,10 @@
 <meta property="og:description" content="Let an LLM explore your mobile or web app, find bugs, and generate replayable tests.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://appcrawl.dev">
-<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230EA5E9'/%3E%3Ctext x='16' y='22' font-family='-apple-system,sans-serif' font-size='20' font-weight='700' fill='%230f1117' text-anchor='middle'%3EA%3C/text%3E%3C/svg%3E">
+<meta property="og:image" content="https://appcrawl.dev/logo.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://appcrawl.dev/logo.png">
+<link rel="icon" type="image/png" href="favicon.png">
 <style>
   :root {
     --bg: #0f1117;
@@ -75,16 +78,17 @@
     font-size: 1.05rem;
     color: var(--text);
   }
-  .logo .mark {
-    width: 28px; height: 28px;
-    background: var(--blue);
+  .logo img {
+    width: 32px; height: 32px;
     border-radius: 6px;
-    color: var(--bg);
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    font-weight: 800;
-    font-size: 1rem;
+    display: block;
+  }
+  .hero-mark {
+    width: 112px;
+    height: 112px;
+    margin: 0 auto 1.5rem;
+    display: block;
+    border-radius: 16px;
   }
   nav .links { display: flex; gap: 1.5rem; font-size: 0.92rem; }
   nav .links a { color: var(--dim); }
@@ -276,7 +280,7 @@
 <nav>
   <div class="container">
     <a href="#" class="logo">
-      <span class="mark">A</span>
+      <img src="logo-512.png" alt="AppCrawl logo">
       appcrawl
     </a>
     <div class="links">
@@ -290,6 +294,7 @@
 
 <header class="hero">
   <div class="container">
+    <img class="hero-mark" src="logo-512.png" alt="AppCrawl spider logo">
     <span class="eyebrow">v0.1 · Early access</span>
     <h1>AI-powered <span class="accent">app testing</span><br>that writes its own tests.</h1>
     <p class="sub">

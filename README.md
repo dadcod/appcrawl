@@ -1,6 +1,10 @@
-# AppCrawl
+<p align="center">
+  <img src="./website/logo-512.png" alt="AppCrawl" width="200">
+</p>
 
-**AI-powered app testing.** Let an LLM explore your mobile or web app, find bugs, and generate replayable tests. Bring your own API key.
+<h1 align="center">AppCrawl</h1>
+
+<p align="center"><b>AI-powered app testing.</b> Let an LLM explore your mobile or web app, find bugs, and generate replayable tests. Bring your own API key.</p>
 
 [![npm](https://img.shields.io/npm/v/appcrawl.svg)](https://www.npmjs.com/package/appcrawl)
 [![license](https://img.shields.io/npm/l/appcrawl.svg)](./LICENSE)
