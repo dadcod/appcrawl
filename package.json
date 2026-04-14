@@ -1,15 +1,49 @@
 {
   "name": "appcrawl",
   "version": "0.1.0",
-  "description": "AI-powered mobile app testing. Let an LLM explore and test your iOS app autonomously.",
+  "description": "AI-powered app testing. Let an LLM explore and test your mobile or web app autonomously. Bring your own API key.",
   "type": "module",
   "bin": {
     "appcrawl": "./dist/index.js"
   },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ],
+  "homepage": "https://appcrawl.dev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dadcod/appcrawl.git"
+  },
+  "bugs": {
+    "url": "https://github.com/dadcod/appcrawl/issues"
+  },
+  "author": "DadCod <dadcod.blog@gmail.com>",
+  "license": "MIT",
+  "keywords": [
+    "testing",
+    "e2e",
+    "ai",
+    "llm",
+    "ios",
+    "android",
+    "mobile",
+    "web",
+    "playwright",
+    "maestro",
+    "qa",
+    "automation",
+    "agent"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "tsx src/index.ts",
     "build": "tsc",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^1.0.0",
@@ -22,10 +56,12 @@
     "commander": "^13.0.0",
     "ollama-ai-provider": "^1.2.0",
     "pixelmatch": "^7.1.0",
-    "playwright": "^1.59.1",
     "pngjs": "^7.0.0",
     "yaml": "^2.8.3",
     "zod": "^3.23.0"
+  },
+  "optionalDependencies": {
+    "playwright": "^1.59.1"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
