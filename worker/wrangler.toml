@@ -1,0 +1,7 @@
+name = "appcrawl-license"
+main = "src/index.ts"
+compatibility_date = "2024-11-01"
+
+[vars]
+STRIPE_API_BASE = "https://api.stripe.com/v1"
+LICENSE_TTL_DAYS = "365"

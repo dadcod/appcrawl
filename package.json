@@ -1,6 +1,6 @@
 {
   "name": "appcrawl",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "AI-powered app testing. Let an LLM explore and test your mobile or web app autonomously. Bring your own API key.",
   "type": "module",
   "bin": {

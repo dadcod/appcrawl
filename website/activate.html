@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Activate AppCrawl Pro</title>
+    <link rel="icon" href="/favicon.png">
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #0b0e14;
+        --fg: #e7eaf0;
+        --muted: #9aa3b2;
+        --accent: #7c8cff;
+        --card: #141824;
+        --border: #232838;
+        --ok: #4ade80;
+        --err: #f87171;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: var(--bg);
+        color: var(--fg);
+        font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+      }
+      main {
+        max-width: 640px;
+        width: 100%;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 24px;
+      }
+      header img { width: 36px; height: 36px; }
+      header h1 { font-size: 18px; margin: 0; font-weight: 600; }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 28px;
+      }
+      h2 { margin: 0 0 8px; font-size: 22px; }
+      p.lede { color: var(--muted); margin: 0 0 20px; }
+      .status { display: flex; align-items: center; gap: 10px; color: var(--muted); }
+      .spinner {
+        width: 14px; height: 14px; border-radius: 50%;
+        border: 2px solid var(--border); border-top-color: var(--accent);
+        animation: spin .8s linear infinite;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      .err { color: var(--err); }
+      .ok { color: var(--ok); }
+      code, pre {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 13px;
+      }
+      pre {
+        background: #0b0e14;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 12px 14px;
+        overflow-x: auto;
+        margin: 0;
+      }
+      .field { margin-top: 18px; }
+      .field label { display: block; color: var(--muted); margin-bottom: 6px; font-size: 13px; }
+      .token-row { position: relative; }
+      .copy-btn {
+        position: absolute; top: 8px; right: 8px;
+        background: var(--border); color: var(--fg);
+        border: 0; border-radius: 6px;
+        padding: 4px 10px; font-size: 12px; cursor: pointer;
+      }
+      .copy-btn:hover { background: #2e3448; }
+      .copy-btn.copied { background: var(--ok); color: #0b0e14; }
+      .steps { margin-top: 22px; }
+      .steps ol { padding-left: 20px; margin: 0; }
+      .steps li { margin-bottom: 10px; }
+      a { color: var(--accent); }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <img src="/logo-512.png" alt="AppCrawl">
+        <h1>AppCrawl</h1>
+      </header>
+
+      <div class="card">
+        <h2>Activating your license…</h2>
+        <p class="lede" id="lede">Verifying your Stripe checkout and issuing your AppCrawl Pro license.</p>
+
+        <div id="status" class="status"><span class="spinner"></span><span>Talking to license server…</span></div>
+
+        <div id="result" style="display:none">
+          <div class="field">
+            <label>License key</label>
+            <div class="token-row">
+              <pre id="token"></pre>
+              <button class="copy-btn" data-target="token">Copy</button>
+            </div>
+          </div>
+
+          <div class="field">
+            <label>Issued to</label>
+            <div id="email" style="font-family: ui-monospace,monospace"></div>
+          </div>
+
+          <div class="field">
+            <label>Expires</label>
+            <div id="expires" style="font-family: ui-monospace,monospace"></div>
+          </div>
+
+          <div class="steps">
+            <h3 style="margin-bottom:8px">Activate it locally</h3>
+            <ol>
+              <li>
+                <div class="token-row">
+                  <pre id="cmd"></pre>
+                  <button class="copy-btn" data-target="cmd">Copy</button>
+                </div>
+              </li>
+              <li>Run any <code>appcrawl</code> command — the license unlocks unlimited runs, steered testing, and all Pro features.</li>
+              <li>Save this page or the license key somewhere safe; you'll need it if you reinstall.</li>
+            </ol>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <script>
+      const WORKER_URL = "https://appcrawl-license.rhpetkov.workers.dev/issue";
+
+      const params = new URLSearchParams(location.search);
+      const sessionId = params.get("session_id");
+      const statusEl = document.getElementById("status");
+      const ledeEl = document.getElementById("lede");
+      const resultEl = document.getElementById("result");
+
+      function showError(msg) {
+        statusEl.innerHTML = `<span class="err">✗</span><span class="err">${msg}</span>`;
+      }
+
+      async function activate() {
+        if (!sessionId) {
+          showError("Missing session ID. Please complete checkout first, or contact support if you already paid.");
+          return;
+        }
+
+        try {
+          const res = await fetch(WORKER_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ session_id: sessionId }),
+          });
+
+          const data = await res.json();
+
+          if (!res.ok) {
+            showError(`${data.error || "Unknown error"} — contact support with session ID ${sessionId}`);
+            return;
+          }
+
+          statusEl.innerHTML = `<span class="ok">✓</span><span class="ok">License issued!</span>`;
+          ledeEl.textContent = "Your AppCrawl Pro license is ready. Paste the activation command below into your terminal.";
+
+          document.getElementById("token").textContent = data.token;
+          document.getElementById("email").textContent = data.email;
+          document.getElementById("expires").textContent = new Date(data.expiresAt).toLocaleDateString();
+          document.getElementById("cmd").textContent = `appcrawl license set ${data.token}`;
+
+          resultEl.style.display = "block";
+        } catch (err) {
+          showError(`Network error: ${err.message}. Please retry or contact support.`);
+        }
+      }
+
+      document.querySelectorAll(".copy-btn").forEach(btn => {
+        btn.addEventListener("click", () => {
+          const target = document.getElementById(btn.dataset.target);
+          navigator.clipboard.writeText(target.textContent);
+          const orig = btn.textContent;
+          btn.textContent = "Copied";
+          btn.classList.add("copied");
+          setTimeout(() => { btn.textContent = orig; btn.classList.remove("copied"); }, 1500);
+        });
+      });
+
+      activate();
+    </script>
+  </body>
+</html>

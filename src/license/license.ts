@@ -32,7 +32,7 @@ import { join } from "node:path";
 // Generate a new pair with:
 //   node -e "const {generateKeyPairSync}=require('crypto');const{publicKey,privateKey}=generateKeyPairSync('ed25519');console.log(publicKey.export({type:'spki',format:'pem'}));console.log(privateKey.export({type:'pkcs8',format:'pem'}))"
 const PUBLIC_KEY_PEM = `-----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEAI64IQKzdjsMlw7m5w1YpUXI9BJe9dlsfr87HO6Q4tKg=
+MCowBQYDK2VwAyEAjhShf+LvCYAixrRHXlWg4O/kq3Phkb1FffTzUX7l5E4=
 -----END PUBLIC KEY-----`;
 
 const FREE_TIER_DAILY_LIMIT = 5;
