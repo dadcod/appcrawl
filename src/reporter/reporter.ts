@@ -601,8 +601,11 @@ async function renderHtml(
         lightboxImg.src = '';
         document.body.style.overflow = '';
       }
-      document.querySelectorAll('[data-lightbox]').forEach(function(img) {
-        img.addEventListener('click', function() { openLightbox(img.src, img.alt); });
+      document.querySelectorAll('[data-lightbox]').forEach(function(el) {
+        el.addEventListener('click', function() {
+          const img = el.tagName === 'IMG' ? el : el.querySelector('img');
+          if (img && img.src) openLightbox(img.src, img.alt);
+        });
       });
       lightbox.addEventListener('click', function(e) {
         if (e.target === lightbox || e.target === lightboxClose) closeLightbox();
